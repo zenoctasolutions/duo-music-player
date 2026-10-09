@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declares Duo Music Player as an Android Auto media app. The browse tree
+     is served by audio_service's MediaBrowserService (see auto_browse.dart). -->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

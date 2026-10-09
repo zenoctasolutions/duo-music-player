@@ -1,0 +1,152 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Storage / Media -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <!-- Writing 4D/8D and Audio Cutter output to Downloads goes through
+         MediaStore on Android 10+ (see MainActivity's DOWNLOADS_CHANNEL),
+         which needs no write permission at all — so this dangerous
+         permission is scoped to the pre-scoped-storage OS versions that
+         still need it, per the "no unnecessary broad storage permissions"
+         requirement. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <!-- Foreground service for background music playback -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Android 13+: needed for the Duo Mode notification. The main
+         player's notification is media-session based and exempt, but
+         Duo's plain notification is hidden without this. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Audio -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- Network -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- System settings -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+
+    <application
+        android:label="Duo Music Player"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true">
+
+        <activity
+            android:name="com.zenocta.duomusicplayer.MainActivity"
+            android:launchMode="singleTop"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Lets the now-playing widget's tap-to-open (art/title area)
+                 launch this activity via HomeWidgetLaunchIntent. -->
+            <intent-filter>
+                <action android:name="es.antonborri.home_widget.action.LAUNCH" />
+            </intent-filter>
+
+        </activity>
+
+        <!-- Invisible trampoline for the home-screen widget's buttons
+             (WidgetActionActivity.kt). Own empty task affinity so it never
+             brings the app's task forward when it only forwards a key. -->
+        <activity
+            android:name="com.zenocta.duomusicplayer.WidgetActionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:launchMode="singleInstance"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Chromecast: Default Media Receiver via CastOptionsProvider (CastHelper.kt). -->
+        <meta-data
+            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="com.zenocta.duomusicplayer.CastOptionsProvider" />
+
+        <!-- Android Auto: this is a media app (browse tree via AudioService below). -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!-- Background Music Playback Service -->
+        <service
+            android:name="com.ryanheise.audioservice.AudioService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+
+        </service>
+
+        <!-- Duo Mode (two songs, one per ear) foreground playback service -->
+        <service
+            android:name="com.zenocta.duomusicplayer.DuoPlaybackService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+
+        <!-- Media Button Receiver -->
+        <receiver
+            android:name="com.ryanheise.audioservice.MediaButtonReceiver"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+
+        </receiver>
+
+        <!-- Now-playing home-screen widget. Only ever reads state Dart
+             writes via home_widget's SharedPreferences bridge — button taps
+             are handled natively (see NowPlayingWidgetProvider.kt), not via
+             a home_widget background Dart callback, so no
+             HomeWidgetBackgroundReceiver registration is needed. -->
+        <receiver
+            android:name=".NowPlayingWidgetProvider"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/now_playing_widget_info" />
+
+        </receiver>
+
+        <!-- Extra widget styles (same data/controls, different layouts). -->
+        <receiver android:name=".ArtTileWidgetProvider" android:exported="true" android:label="Duo · Album art">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/now_playing_widget_tile_info" />
+        </receiver>
+        <receiver android:name=".LargePlayerWidgetProvider" android:exported="true" android:label="Duo · Large player">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/now_playing_widget_large_info" />
+        </receiver>
+
+        <!-- Flutter -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
+    </application>
+
+</manifest>
