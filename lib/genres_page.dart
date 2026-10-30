@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:music/player_screen.dart';
@@ -16,6 +17,10 @@ import 'songs_page.dart' show GlobalMiniPlayer;
 import 'banner_ad_widget3.dart';
 import 'app_palette.dart';
 import 'ad_widgets.dart';
+import 'library/title_cleaner.dart';
+import 'library/library_motion.dart';
+import 'motion/motion_kit.dart';
+import 'library/queue_menu.dart';
 
 /// GenresPage with grid layout and system-aware dark mode
 class GenresPage extends StatefulWidget {
@@ -326,7 +331,7 @@ class _GenresPageState extends State<GenresPage> {
       for (var t in tokens) {
         t = t.trim();
         if (t.isEmpty) continue;
-        out.add(_normGenre(t));
+        out.add(TitleCleaner.looksLikeSite(t) ? 'Unknown' : _normGenre(t));
       }
     }
     if (out.isEmpty) return ['Unknown'];
@@ -395,6 +400,45 @@ class _GenresPageState extends State<GenresPage> {
   }
 
   // ---------- UI Components ----------
+  // Gradient + glyph per genre (deterministic by name).
+  static const List<List<Color>> _tileGradients = [
+    [Color(0xFF7C4DFF), Color(0xFFD946EF)],
+    [Color(0xFFFF9A3C), Color(0xFFFF4E78)],
+    [Color(0xFF22D3EE), Color(0xFF4F46E5)],
+    [Color(0xFF34D399), Color(0xFF0EA5A4)],
+    [Color(0xFFFFB020), Color(0xFFE5254B)],
+    [Color(0xFF2DD4BF), Color(0xFF38BDF8)],
+    [Color(0xFF6366F1), Color(0xFFDB2777)],
+    [Color(0xFFF472B6), Color(0xFFF59E0B)],
+  ];
+
+  static List<Color> _gradientFor(String genre) {
+    var h = 0;
+    for (final u in genre.toLowerCase().codeUnits) {
+      h = (h * 31 + u) & 0x7fffffff;
+    }
+    return _tileGradients[h % _tileGradients.length];
+  }
+
+  static String _glyphFor(String genre) {
+    final g = genre.toLowerCase();
+    bool has(List<String> k) => k.any(g.contains);
+    if (has(['rock', 'metal', 'punk', 'grunge'])) return '🎸';
+    if (has(['pop'])) return '🎤';
+    if (has(['hip', 'rap', 'trap'])) return '🎧';
+    if (has(['classical', 'orchestra', 'opera', 'piano'])) return '🎻';
+    if (has(['jazz', 'blues', 'soul'])) return '🎷';
+    if (has(['electro', 'edm', 'techno', 'house', 'dance', 'trance'])) return '🎛️';
+    if (has(['country', 'folk', 'acoustic'])) return '🪕';
+    if (has(['bollywood', 'hindi', 'indian', 'tamil', 'telugu', 'punjabi', 'filmi', 'soundtrack', 'ost'])) return '🎬';
+    if (has(['latin', 'reggae', 'salsa'])) return '🥁';
+    if (has(['chill', 'ambient', 'lofi', 'lo-fi', 'relax', 'calm'])) return '🌙';
+    if (has(['upbeat', 'energetic', 'party'])) return '⚡';
+    if (has(['podcast', 'speech', 'audiobook'])) return '🎙️';
+    if (g == 'unknown') return '❓';
+    return '🎵';
+  }
+
   Widget _genreGridItem({
     required String title,
     required String subtitle,
@@ -405,142 +449,122 @@ class _GenresPageState extends State<GenresPage> {
     required Color secondaryText,
     required bool isLandscape,
   }) {
+    final colors = _gradientFor(title);
+    final glyph = _glyphFor(title);
     final coverItem = songs.isNotEmpty ? songs.first : null;
 
-    if (isLandscape) {
-      return InkWell(
-        onTap: () => _openGenreDetail(title, songs),
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          decoration: BoxDecoration(
-            color: cardColor,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          padding: const EdgeInsets.all(8),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 60,
-                height: 60,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: coverItem != null
-                      ? _coverFromFile(coverItem)
-                      : Container(
-                    color: _accentColor.withOpacity(0.1),
-                    child: Icon(Icons.library_music, color: secondaryText, size: 24),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: primaryText),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 13, color: secondaryText),
-                    ),
-                  ],
-                ),
-              ),
-              GestureDetector(
-                onTap: () async {
-                  if (songs.isNotEmpty) {
-                    final genrePaths = songs.map((f) => f.path).toList();
-                    await _markRecentlyPlayed(songs.first.path);
-                    widget.onPlay({'paths': genrePaths, 'startIndex': 0});
-                  }
-                },
-                child: CircleAvatar(
-                  radius: 18,
-                  backgroundColor: _accentColor,
-                  child: const Icon(Icons.play_arrow, color: Colors.white, size: 20),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
+    Future<void> playAll() async {
+      if (songs.isEmpty) return;
+      HapticFeedback.selectionClick();
+      final genrePaths = songs.map((f) => f.path).toList();
+      await _markRecentlyPlayed(songs.first.path);
+      widget.onPlay({'paths': genrePaths, 'startIndex': 0});
     }
 
-    return InkWell(
-      onTap: () => _openGenreDetail(title, songs),
-      borderRadius: BorderRadius.circular(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Stack(
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    color: cardColor,
-                  ),
-                  child: coverItem != null
-                      ? _coverFromFile(coverItem)
-                      : Center(
-                    child: Icon(
-                      Icons.library_music,
-                      size: 48,
-                      color: secondaryText,
-                    ),
-                  ),
-                ),
-                Positioned(
-                  right: 8,
-                  bottom: 8,
-                  child: GestureDetector(
-                    onTap: () async {
-                      if (songs.isNotEmpty) {
-                        final genrePaths = songs.map((f) => f.path).toList();
-                        await _markRecentlyPlayed(songs.first.path);
-                        widget.onPlay({'paths': genrePaths, 'startIndex': 0});
-                      }
-                    },
-                    child: CircleAvatar(
-                      radius: 18,
-                      backgroundColor: _accentColor,
-                      child: const Icon(Icons.play_arrow, color: Colors.white, size: 20),
-                    ),
-                  ),
-                ),
-              ],
+    final playButton = Semantics(
+      button: true,
+      label: 'Play $title',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: playAll,
+        child: SizedBox(
+          width: 48,
+          height: 48,
+          child: Center(
+            child: Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.95),
+                shape: BoxShape.circle,
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.25), blurRadius: 8, offset: const Offset(0, 3))],
+              ),
+              child: Icon(Icons.play_arrow_rounded, color: colors.last, size: 26),
             ),
           ),
-          const SizedBox(height: 8),
-          Text(
+        ),
+      ),
+    );
+
+    Widget thumb(double size) => Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(size * 0.22),
+            border: Border.all(color: Colors.white.withOpacity(0.55), width: 1.5),
+            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.25), blurRadius: 8, offset: const Offset(0, 3))],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(size * 0.2),
+            child: coverItem == null
+                ? Container(color: Colors.white24)
+                : _coverFromFile(coverItem),
+          ),
+        );
+
+    final textBlock = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Tooltip(
+          message: title,
+          child: Text(
             title,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: primaryText,
-            ),
+            semanticsLabel: title,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: Colors.white, height: 1.1),
           ),
-          const SizedBox(height: 2),
-          Text(
-            subtitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 14,
-              color: secondaryText,
-            ),
-          ),
-        ],
+        ),
+        const SizedBox(height: 3),
+        Text(
+          subtitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.85)),
+        ),
+      ],
+    );
+
+    final decoration = BoxDecoration(
+      borderRadius: BorderRadius.circular(22),
+      gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: colors),
+      boxShadow: [BoxShadow(color: colors.last.withOpacity(isDark ? 0.25 : 0.32), blurRadius: 14, offset: const Offset(0, 6))],
+    );
+
+    final body = isLandscape
+        ? Container(
+            decoration: decoration,
+            padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+            child: Row(children: [
+              thumb(56),
+              const SizedBox(width: 12),
+              Expanded(child: textBlock),
+              Text(glyph, style: const TextStyle(fontSize: 28)),
+              playButton,
+            ]),
+          )
+        : Container(
+            decoration: decoration,
+            clipBehavior: Clip.antiAlias,
+            child: Stack(children: [
+              Positioned(
+                right: -8,
+                top: -6,
+                child: Opacity(opacity: 0.28, child: Text(glyph, style: const TextStyle(fontSize: 92))),
+              ),
+              Positioned(left: 14, top: 14, child: thumb(54)),
+              Positioned(left: 14, right: 14, bottom: 12, child: Padding(padding: const EdgeInsets.only(right: 44), child: textBlock)),
+              Positioned(right: 2, bottom: 2, child: playButton),
+            ]),
+          );
+
+    return Semantics(
+      button: true,
+      label: '$title, $subtitle',
+      child: PressScale(
+        onTap: () => _openGenreDetail(title, songs),
+        child: body,
       ),
     );
   }
@@ -643,7 +667,7 @@ class _GenresPageState extends State<GenresPage> {
     final brightness = Theme.of(context).brightness;
     final isDark = brightness == Brightness.dark;
 
-    final bgColor = isDark ? const Color(0xFF0B0B0B) : const Color(0xFFF8F9FD);
+    final bgColor = isDark ? AppPalette.darkBackground : const Color(0xFFF8F9FD);
     // AppBar color matches the Settings page AppBar (SettingsColors.appBarBackground).
     final appBarColor = isDark ? AppPalette.darkBackground : Colors.white;
     final iconColor = isDark ? Colors.white : Colors.black;
@@ -699,21 +723,25 @@ class _GenresPageState extends State<GenresPage> {
                 crossAxisCount: 2,
                 mainAxisSpacing: 12,
                 crossAxisSpacing: 12,
-                childAspectRatio: isLandscape ? 2.5 : 0.78,
+                childAspectRatio: isLandscape ? 2.5 : 1.0,
               ),
               itemCount: genres.length,
               itemBuilder: (context, index) {
                 final genre = genres[index];
                 final songs = genreMap[genre]!;
-                return _genreGridItem(
-                  title: genre,
-                  subtitle: '${songs.length} ${songs.length == 1 ? 'track' : 'tracks'}',
-                  songs: songs,
-                  isDark: isDark,
-                  cardColor: cardColor,
-                  primaryText: primaryText,
-                  secondaryText: secondaryText,
-                  isLandscape: isLandscape,
+                return StaggerIn(
+                  playKey: 'genres:$genre',
+                  index: index,
+                  child: _genreGridItem(
+                    title: genre,
+                    subtitle: '${songs.length} ${songs.length == 1 ? 'track' : 'tracks'}',
+                    songs: songs,
+                    isDark: isDark,
+                    cardColor: cardColor,
+                    primaryText: primaryText,
+                    secondaryText: secondaryText,
+                    isLandscape: isLandscape,
+                  ),
                 );
               },
             );
@@ -815,9 +843,7 @@ class _GenreDetailScreenState extends State<_GenreDetailScreen> {
   }
 
   String _displayTitle(File file) {
-    final t = _getMetadataProperty(file.path, 'title');
-    if (t != null && t.toString().trim().isNotEmpty) return t.toString();
-    return p.basenameWithoutExtension(file.path);
+    return TitleCleaner.title(_getMetadataProperty(file.path, 'title')?.toString(), path: file.path);
   }
 
   void _onPlayFromFilteredList(int index) async {
@@ -841,12 +867,78 @@ class _GenreDetailScreenState extends State<_GenreDetailScreen> {
     }
   }
 
+  Future<void> _playAll({required bool shuffle}) async {
+    if (_sortedSongs.isEmpty) return;
+    HapticFeedback.selectionClick();
+    final paths = _sortedSongs.map((f) => f.path).toList();
+    if (shuffle) paths.shuffle();
+    await _markRecentlyPlayed(paths.first);
+    if (!mounted) return;
+    widget.onPlayFromAllList({'paths': paths, 'startIndex': 0});
+  }
+
+  Widget _hero(bool isDark) {
+    final colors = _GenresPageState._gradientFor(widget.title);
+    final glyph = _GenresPageState._glyphFor(widget.title);
+    Widget btn(String label, IconData icon, bool filled, VoidCallback onTap) => Expanded(
+          child: Semantics(
+            button: true,
+            label: label,
+            child: PressScale(
+              onTap: onTap,
+              child: Container(
+                height: 48,
+                decoration: BoxDecoration(
+                  color: filled ? Colors.white : Colors.white.withOpacity(0.18),
+                  borderRadius: BorderRadius.circular(24),
+                  border: filled ? null : Border.all(color: Colors.white.withOpacity(0.6)),
+                ),
+                child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Icon(icon, size: 22, color: filled ? colors.last : Colors.white),
+                  const SizedBox(width: 6),
+                  Text(label, style: TextStyle(fontWeight: FontWeight.w700, color: filled ? colors.last : Colors.white)),
+                ]),
+              ),
+            ),
+          ),
+        );
+    return FadeSlideIn(
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+        padding: const EdgeInsets.all(16),
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(22),
+          gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: colors),
+        ),
+        child: Stack(children: [
+          Positioned(right: -6, top: -10, child: Opacity(opacity: 0.25, child: Text(glyph, style: const TextStyle(fontSize: 84)))),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(widget.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900, color: Colors.white)),
+            const SizedBox(height: 2),
+            Text('${_sortedSongs.length} ${_sortedSongs.length == 1 ? 'track' : 'tracks'}',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.85))),
+            const SizedBox(height: 14),
+            Row(children: [
+              btn('Play', Icons.play_arrow_rounded, true, () => _playAll(shuffle: false)),
+              const SizedBox(width: 10),
+              btn('Shuffle', Icons.shuffle_rounded, false, () => _playAll(shuffle: true)),
+            ]),
+          ]),
+        ]),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final brightness = Theme.of(context).brightness;
     final isDark = brightness == Brightness.dark;
 
-    final bgColor = isDark ? const Color(0xFF0B0B0B) : const Color(0xFFF8F9FD);
+    final bgColor = isDark ? AppPalette.darkBackground : const Color(0xFFF8F9FD);
     // AppBar color matches the Settings page AppBar (SettingsColors.appBarBackground).
     final appBarColor = isDark ? AppPalette.darkBackground : Colors.white;
     final cardColor = isDark ? AppPalette.darkCard : Colors.white;
@@ -872,6 +964,7 @@ class _GenreDetailScreenState extends State<_GenreDetailScreen> {
       ),
       body: Column(
         children: [
+          _hero(isDark),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: TextField(
@@ -882,7 +975,7 @@ class _GenreDetailScreenState extends State<_GenreDetailScreen> {
                 hintStyle: TextStyle(color: secondaryText.withOpacity(0.7)),
                 prefixIcon: Icon(Icons.search, color: secondaryText),
                 suffixIcon: _query.isNotEmpty
-                    ? IconButton(
+                    ? IconButton(tooltip: 'Clear search', 
                   icon: Icon(Icons.clear, color: secondaryText),
                   onPressed: () {
                     _searchController.clear();
@@ -897,7 +990,7 @@ class _GenreDetailScreenState extends State<_GenreDetailScreen> {
                 fillColor: cardColor,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                 border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(22),
                   borderSide: BorderSide.none,
                 ),
               ),
@@ -931,7 +1024,10 @@ class _GenreDetailScreenState extends State<_GenreDetailScreen> {
               itemCount: _filteredSongs.length,
               itemBuilder: (context, index) {
                 final file = _filteredSongs[index];
-                return _TrackTile(
+                return StaggerIn(
+                  playKey: 'genre:${widget.title}:${file.path}',
+                  index: index,
+                  child: _TrackTile(
                   file: file,
                   allFiles: _sortedSongs,
                   allAudioFiles: widget.allAudioFiles,
@@ -940,6 +1036,7 @@ class _GenreDetailScreenState extends State<_GenreDetailScreen> {
                   },
                   currentPlayingIndex: widget.currentPlayingIndex,
                   metadataCache: widget.metadataCache,
+                  ),
                 );
               },
             ),
@@ -1023,15 +1120,13 @@ class _TrackTileState extends State<_TrackTile> {
   }
 
   String _displayTitle(File file) {
-    final t = _getMetadataProperty(file.path, 'title');
-    if (t != null && t.toString().trim().isNotEmpty) return t.toString();
-    return p.basenameWithoutExtension(file.path);
+    return TitleCleaner.title(_getMetadataProperty(file.path, 'title')?.toString(), path: file.path);
   }
 
   String _displaySubtitle(File file) {
     final artist = _getMetadataProperty(file.path, 'artist');
     final album = _getMetadataProperty(file.path, 'album');
-    final artistStr = artist != null && artist.toString().trim().isNotEmpty ? artist.toString() : 'Unknown Artist';
+    final artistStr = TitleCleaner.artistOrUnknown(artist?.toString());
     final albumStr = album != null && album.toString().trim().isNotEmpty ? album.toString() : 'Unknown Album';
     return '$artistStr • $albumStr';
   }
@@ -1156,7 +1251,7 @@ class _TrackTileState extends State<_TrackTile> {
       ),
       title: Text(
         _displayTitle(widget.file),
-        maxLines: 1,
+        maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(color: primaryText),
       ),
@@ -1166,20 +1261,17 @@ class _TrackTileState extends State<_TrackTile> {
         overflow: TextOverflow.ellipsis,
         style: TextStyle(color: secondaryText),
       ),
-      trailing: (isCurrent && playing)
-          ? const _PlayingBadge()
-          : Icon(Icons.play_arrow, color: primaryText),
-      onTap: _onTapSong,
+      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+        (isCurrent && playing)
+            ? EqualizerBars(color: AppPalette.accent, playing: true)
+            : Icon(Icons.play_arrow, color: primaryText),
+        QueueMenuButton(paths: [widget.file.path], color: secondaryText),
+      ]),
+      onTap: () {
+        HapticFeedback.selectionClick();
+        _onTapSong();
+      },
     );
-  }
-}
-
-class _PlayingBadge extends StatelessWidget {
-  const _PlayingBadge();
-
-  @override
-  Widget build(BuildContext context) {
-    return Icon(Icons.equalizer, color: AppPalette.accent);
   }
 }
 

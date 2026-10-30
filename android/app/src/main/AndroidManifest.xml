@@ -1,14 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Storage / Media -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- Writing 4D/8D and Audio Cutter output to Downloads goes through
          MediaStore on Android 10+ (see MainActivity's DOWNLOADS_CHANNEL),
          which needs no write permission at all — so this dangerous
          permission is scoped to the pre-scoped-storage OS versions that
          still need it, per the "no unnecessary broad storage permissions"
          requirement. -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
     <!-- Foreground service for background music playback -->
@@ -33,8 +33,7 @@
         android:label="Duo Music Player"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true"
-        android:requestLegacyExternalStorage="true">
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name="com.zenocta.duomusicplayer.MainActivity"
@@ -69,6 +68,18 @@
             android:taskAffinity=""
             android:launchMode="singleInstance"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Quick Settings tile (NowPlayingTileService.kt). -->
+        <service
+            android:name=".NowPlayingTileService"
+            android:exported="true"
+            android:label="@string/qs_tile_label"
+            android:icon="@drawable/ic_qs_tile"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <!-- Chromecast: Default Media Receiver via CastOptionsProvider (CastHelper.kt). -->
         <meta-data

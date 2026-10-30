@@ -1,7 +1,9 @@
 // lib/songs_page.dart
+import 'l10n/l10n.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:audio_session/audio_session.dart' show AudioSession, AudioInterruptionType;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show listEquals;
@@ -49,6 +51,15 @@ import 'artwork_service.dart';
 import 'lastfm_service.dart';
 import 'cast_service.dart';
 import 'favorite_button.dart';
+import 'library/title_cleaner.dart';
+import 'search/search_page.dart';
+import 'shortcuts/shortcut_actions.dart';
+import 'library/library_motion.dart';
+import 'library/queue_actions.dart';
+import 'player/now_playing_route.dart';
+import 'ui/animated_nav_bar.dart';
+import 'ui/app_page_bar.dart';
+import 'ui/tab_body_switcher.dart';
 
 const int kMaxTitleLength = 30;
 const String kDefaultArt = 'images/music.png';
@@ -94,12 +105,19 @@ class _NotificationAudioHandler extends BaseAudioHandler with QueueHandler, Seek
   static Future<void> Function()? onNotificationDismissed;
   static Future<void> Function()? onAppTaskRemoved;
   static Future<void> Function()? onStop;
+  static Future<void> Function(String name)? onCustomAction;
 
   /// Android Auto / MediaBrowser support (see auto_browse.dart).
   static Future<AutoLibrary> Function()? autoLibrary;
   static Future<void> Function(List<String> queue, int index)? onPlayQueue;
 
   _NotificationAudioHandler() : super();
+
+  @override
+  Future<dynamic> customAction(String name, [Map<String, dynamic>? extras]) async {
+    await onCustomAction?.call(name);
+    return null;
+  }
 
   @override
   Future<List<MediaItem>> getChildren(String parentMediaId, [Map<String, dynamic>? options]) async {
@@ -265,7 +283,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     _current = this;
     WidgetsBinding.instance.addObserver(this);
 
-    _libraryTabController = TabController(length: 2, vsync: this, initialIndex: 1);
+    _libraryTabController = TabController(length: 2, vsync: this, initialIndex: 0); // Overview first
     int lastLibrarySubTabIndex = _libraryTabController.index;
     _libraryTabController.addListener(() {
       // TabController's listener fires on every animation frame during a
@@ -292,6 +310,9 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
 
     _loadCachedAudioList().then((_) {
       unawaited(_consumeWidgetLaunchAction());
+      // Launcher shortcuts ('Shuffle all' / 'Search'); the cached library is
+      // loaded by now, so a cold-start shortcut has songs to work with.
+      ShortcutActions.instance.attach(_onShortcutAction);
       if (_audioFiles.isEmpty) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _requestPermissionAndLoadSongs());
       } else {
@@ -319,10 +340,9 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     return AutoLibrary(
       allPaths: _audioFiles.map((f) => f.path).toList(),
       title: (path) {
-        final t = _metaCache[path]?.title;
-        return (t != null && t.isNotEmpty) ? t : p.basenameWithoutExtension(path);
+        return TitleCleaner.title(_metaCache[path]?.title, path: path);
       },
-      artist: (path) => _metaCache[path]?.artist,
+      artist: (path) => TitleCleaner.artist(_metaCache[path]?.artist),
       favorites: FavoritesNotifier.instance.favoritesSet,
       recent: RecentlyPlayedNotifier.instance.paths.value,
       mostPlayed: PlayStats.mostPlayed(_audioFiles).map((f) => f.path).toList(),
@@ -424,6 +444,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
   Color get _subtitleColor => _effectiveIsDark ? Colors.white70 : const Color(0xFF8C8A9D);
   Color get _bottomNavBackground => _effectiveIsDark ? Colors.black : const Color(0xFFF8F9FD);
   Color get _bottomNavCardColor => _cardColor;
+  bool get _useLogoNavGradient => _effectiveIsDark && !AppPalette.amoled && AppPalette.isLogoTheme;
   Color get _bottomNavSubtitleColor => _subtitleColor;
 
   @override
@@ -509,6 +530,9 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
       _NotificationAudioHandler.onNotificationDismissed = _onNotificationDismissedAndNotify;
       _NotificationAudioHandler.onAppTaskRemoved = _onAppTaskRemoved;
       _NotificationAudioHandler.onStop = _stopRadio;
+      _NotificationAudioHandler.onCustomAction = _onNotificationCustomAction;
+      PlaylistContext.shuffleEnabledNotifier.removeListener(_scheduleNotificationRefresh);
+      PlaylistContext.shuffleEnabledNotifier.addListener(_scheduleNotificationRefresh);
       _NotificationAudioHandler.autoLibrary = _buildAutoLibrary;
       _NotificationAudioHandler.onPlayQueue = (queue, index) async {
         if (queue.isEmpty) return;
@@ -647,6 +671,86 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     await _updatePlaybackState(playing: _isPlaying);
   }
 
+  // Notification controls: [favorite][prev][play/pause][next][shuffle]; the
+  // compact view keeps the three standard ones (indices 1..3). Radio keeps
+  // its stop/play layout (no favorite/shuffle).
+  (List<MediaControl>, List<int>) _notificationControls(bool playing) {
+    if (RadioPlaybackContext.isActive) {
+      return (
+        <MediaControl>[
+          MediaControl.stop,
+          if (playing) MediaControl.pause else MediaControl.play,
+        ],
+        const [0, 1],
+      );
+    }
+    final mediaId = _audioHandler?.mediaItem.value?.id;
+    if (mediaId == null) {
+      return (
+        <MediaControl>[
+          MediaControl.skipToPrevious,
+          if (playing) MediaControl.pause else MediaControl.play,
+          MediaControl.skipToNext,
+        ],
+        const [0, 1, 2],
+      );
+    }
+    final isFav = FavoritesNotifier.instance.contains(mediaId);
+    final shuffleOn = PlaylistContext.shuffleEnabledNotifier.value;
+    return (
+      <MediaControl>[
+        MediaControl.custom(
+          androidIcon: isFav ? 'drawable/ic_notif_favorite_filled' : 'drawable/ic_notif_favorite',
+          label: isFav ? 'Remove from favorites' : 'Add to favorites',
+          name: 'toggle_favorite',
+        ),
+        MediaControl.skipToPrevious,
+        if (playing) MediaControl.pause else MediaControl.play,
+        MediaControl.skipToNext,
+        MediaControl.custom(
+          androidIcon: shuffleOn ? 'drawable/ic_notif_shuffle_on' : 'drawable/ic_notif_shuffle',
+          label: shuffleOn ? 'Shuffle on' : 'Shuffle off',
+          name: 'toggle_shuffle',
+        ),
+      ],
+      const [1, 2, 3],
+    );
+  }
+
+  Timer? _notifRefreshTimer;
+
+  /// Coalesced refresh of the notification buttons (favorite/shuffle state).
+  void _scheduleNotificationRefresh() {
+    _notifRefreshTimer?.cancel();
+    _notifRefreshTimer = Timer(const Duration(milliseconds: 150), () {
+      if (!mounted || _audioHandler == null) return;
+      unawaited(_updatePlaybackState(playing: _isPlaying));
+    });
+  }
+
+  Future<void> _onNotificationCustomAction(String name) async {
+    if (name == 'toggle_favorite') {
+      final id = _audioHandler?.mediaItem.value?.id;
+      if (id == null || RadioPlaybackContext.isActive) return;
+      try {
+        if (!FavoritesNotifier.instance.initialized) await FavoritesNotifier.instance.init();
+        await FavoritesNotifier.instance.toggle(id);
+      } catch (e) {
+        debugPrint('Notification favorite toggle failed: $e');
+      }
+      _scheduleNotificationRefresh();
+    } else if (name == 'toggle_shuffle') {
+      final newVal = !PlaylistContext.shuffleEnabledNotifier.value;
+      PlaylistContext.setShuffleEnabled(newVal);
+      try {
+        await _audioPlayer.setShuffleModeEnabled(newVal);
+      } catch (e) {
+        debugPrint('setShuffleModeEnabled error: $e');
+      }
+      _scheduleNotificationRefresh();
+    }
+  }
+
   Future<void> _updateNotificationForMediaItem(MediaItem item, {bool playing = true}) async {
     unawaited(HomeWidgetService.instance.updateNowPlaying(
       title: item.title,
@@ -663,17 +767,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
         debugPrint('Warning: could not call mediaItem.add via dynamic cast: $e');
       }
 
-      final controls = RadioPlaybackContext.isActive
-          ? <MediaControl>[
-        MediaControl.stop,
-        if (playing) MediaControl.pause else MediaControl.play,
-      ]
-          : <MediaControl>[
-        MediaControl.skipToPrevious,
-        if (playing) MediaControl.pause else MediaControl.play,
-        MediaControl.skipToNext,
-      ];
-      final compactIndices = RadioPlaybackContext.isActive ? const [0, 1] : const [0, 1, 2];
+      final (controls, compactIndices) = _notificationControls(playing);
 
       final pbState = PlaybackState(
         controls: controls,
@@ -701,17 +795,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     try {
       if (_audioHandler == null) return;
 
-      final controls = RadioPlaybackContext.isActive
-          ? <MediaControl>[
-        MediaControl.stop,
-        if (playing) MediaControl.pause else MediaControl.play,
-      ]
-          : <MediaControl>[
-        MediaControl.skipToPrevious,
-        if (playing) MediaControl.pause else MediaControl.play,
-        MediaControl.skipToNext,
-      ];
-      final compactIndices = RadioPlaybackContext.isActive ? const [0, 1] : const [0, 1, 2];
+      final (controls, compactIndices) = _notificationControls(playing);
 
       final pbState = PlaybackState(
         controls: controls,
@@ -749,12 +833,55 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
 
   void _onFavoritesChanged() {
     if (!mounted) return;
+    _scheduleNotificationRefresh();
     setState(() {
       _favorites = Set<String>.from(FavoritesNotifier.instance.favoritesSet);
     });
   }
 
+  StreamSubscription? _interruptionSub;
+  StreamSubscription? _noisySub;
+  DateTime? _interruptedPlayingAt;
+
+  /// Logs every audio-focus interruption (so an unexplained pause can be
+  /// traced) and resumes after a transient loss that just_audio's own
+  /// handling missed. Permanent loss (another music app took over) is never
+  /// resumed, and ducking never pauses.
+  Future<void> _watchAudioInterruptions() async {
+    try {
+      final session = await AudioSession.instance;
+      _interruptionSub?.cancel();
+      _noisySub?.cancel();
+      _interruptionSub = session.interruptionEventStream.listen((e) {
+        debugPrint('AudioFocus interruption begin=${e.begin} type=${e.type} playing=${_audioPlayer.playing}');
+        if (e.begin) {
+          if (e.type == AudioInterruptionType.pause && _audioPlayer.playing) {
+            _interruptedPlayingAt = DateTime.now();
+          }
+          return;
+        }
+        final at = _interruptedPlayingAt;
+        _interruptedPlayingAt = null;
+        if (at == null || e.type != AudioInterruptionType.pause) return;
+        if (DateTime.now().difference(at) < const Duration(minutes: 2)) {
+          Future.delayed(const Duration(milliseconds: 400), () {
+            if (mounted && !_audioPlayer.playing && !DuoService.instance.lastState.anyPlaying) {
+              debugPrint('AudioFocus: resuming after transient loss');
+              _audioPlayer.play();
+            }
+          });
+        }
+      });
+      _noisySub = session.becomingNoisyEventStream.listen((_) {
+        debugPrint('AudioFocus: becoming noisy (output route lost) playing=${_audioPlayer.playing}');
+      });
+    } catch (e) {
+      debugPrint('AudioSession watch failed: $e');
+    }
+  }
+
   void _setupAudioPlayer() {
+    unawaited(_watchAudioInterruptions());
     // Duo Mode and the main player/radio never play at the same time: Duo
     // pauses this player before it starts, and this player starting pauses Duo.
     DuoService.instance.onBeforePlay = () {
@@ -874,7 +1001,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
         return;
       }
       final List<File> files = [];
-      for (final path in cached) {
+      for (final path in cached.toSet()) {
         try {
           final f = File(path);
           if (await f.exists()) files.add(f);
@@ -953,8 +1080,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
   String _sortKeyText(File file) {
     switch (SongSort.field) {
       case SongSortField.artist:
-        final a = _metaCache[file.path]?.artist?.trim();
-        return (a != null && a.isNotEmpty) ? a : 'Unknown artist';
+        return TitleCleaner.artist(_metaCache[file.path]?.artist) ?? 'Unknown artist';
       case SongSortField.album:
         final a = _metaCache[file.path]?.album?.trim();
         return (a != null && a.isNotEmpty) ? a : 'Unknown album';
@@ -972,22 +1098,19 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     final text = _sortKeyText(file).trim();
     if (text.isEmpty) return '#';
 
-    final first = text[0].toUpperCase();
-    if (RegExp(r'^[A-Z]$').hasMatch(first)) return first;
-    if (RegExp(r'^[0-9]$').hasMatch(first)) return '0-9';
-    return '#';
+    // Digits, symbols and non-Latin scripts all share one '#' group.
+    return TitleCleaner.sectionLetter(text);
   }
 
   String _songTitleForSort(File file) {
-    final meta = _metaCache[file.path];
-    final title = meta?.title?.trim();
-    if (title != null && title.isNotEmpty) return title;
-    return p.basenameWithoutExtension(file.path);
+    return TitleCleaner.title(_metaCache[file.path]?.title, path: file.path);
   }
 
   void _rebuildSongDisplayList() {
     final source = _isSearchingInSongs ? _filteredSongs : _audioFiles;
-    final sorted = List<File>.from(source);
+    // Never show the same path twice (stale cache / double-added conversions).
+    final seenPaths = <String>{};
+    final sorted = source.where((f) => seenPaths.add(f.path)).toList();
 
     final field = SongSort.field;
     final dir = SongSort.ascending ? 1 : -1;
@@ -1019,6 +1142,19 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     final items = <_SongListItem>[];
     String? currentLetter;
     final letterHeaders = SongSort.usesLetterHeaders(field);
+
+    if (letterHeaders) {
+      // Keep every '#' title (digits, symbols, non-Latin) in one block so it
+      // gets a single header: before A when ascending, after Z when descending.
+      final hash = <File>[];
+      final letters = <File>[];
+      for (final f in sorted) {
+        (_sectionLetterFor(f) == '#' ? hash : letters).add(f);
+      }
+      sorted
+        ..clear()
+        ..addAll(SongSort.ascending ? [...hash, ...letters] : [...letters, ...hash]);
+    }
 
     for (final file in sorted) {
       final idx = _audioIndexByPath[file.path] ?? _audioFiles.indexWhere((f) => f.path == file.path);
@@ -1224,8 +1360,14 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
       uniqueMap.putIfAbsent(canonical, () => file);
     }
 
-    final finalList = uniqueMap.values.toList();
-    finalList.sort((a, b) => p.basename(a.path).toLowerCase().compareTo(p.basename(b.path).toLowerCase()));
+    final finalList = _dropDuplicateCopies(uniqueMap.values.toList());
+    // Same key as the Songs tab (cleaned title), so the queue the player
+    // builds from this list follows the order the user sees.
+    finalList.sort((a, b) {
+      final c = _songTitleForSort(a).toLowerCase().compareTo(_songTitleForSort(b).toLowerCase());
+      if (c != 0) return c;
+      return p.basename(a.path).toLowerCase().compareTo(p.basename(b.path).toLowerCase());
+    });
 
     final newPaths = finalList.map((f) => f.path).toSet();
     _metaCache.removeWhere((path, _) => !newPaths.contains(path));
@@ -1248,6 +1390,46 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
 
     unawaited(_preloadBasicMetadata());
     _rebuildSongDisplayList();
+  }
+
+  /// Removes byte-for-byte copies of the same file kept in different folders
+  /// (e.g. Music + Download). Two files merge only when their cleaned file
+  /// names match, their sizes are identical and their durations are within
+  /// 1s (both known) — anything else is kept. The copy in the main Music
+  /// folder wins, otherwise the first one found.
+  List<File> _dropDuplicateCopies(List<File> files) {
+    final groups = <String, List<File>>{};
+    final out = <File>[];
+    for (final f in files) {
+      final size = LibraryInfo.sizeBytes[f.path] ?? 0;
+      final dur = LibraryInfo.durationMs[f.path] ?? 0;
+      if (size <= 0 || dur <= 0) {
+        out.add(f);
+        continue;
+      }
+      final name = TitleCleaner.title(null, path: f.path).toLowerCase();
+      groups.putIfAbsent('$size|$name', () => []).add(f);
+    }
+    bool inMusic(File f) => f.path.toLowerCase().contains('/music/');
+    for (final g in groups.values) {
+      final clusters = <List<File>>[];
+      for (final f in g) {
+        final d = LibraryInfo.durationMs[f.path]!;
+        final c = clusters.firstWhere(
+          (c) => (LibraryInfo.durationMs[c.first.path]! - d).abs() <= 1000,
+          orElse: () {
+            final n = <File>[];
+            clusters.add(n);
+            return n;
+          },
+        );
+        c.add(f);
+      }
+      for (final c in clusters) {
+        out.add(c.firstWhere(inMusic, orElse: () => c.first));
+      }
+    }
+    return out;
   }
 
   Future<void> _preloadBasicMetadata() async {
@@ -1538,14 +1720,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     }
   }
 
-  String _displayArtist(String? artist) {
-    if (artist == null) return 'Unknown Artist';
-    final trimmed = artist.trim();
-    if (trimmed.isEmpty) return 'Unknown Artist';
-    final low = trimmed.toLowerCase();
-    if (low.contains('unknown') || low == 'na' || low == 'n/a' || low == '-') return 'Unknown Artist';
-    return trimmed;
-  }
+  String _displayArtist(String? artist) => TitleCleaner.artistOrUnknown(artist);
 
   String _albumAndYear(SongMeta? meta) {
     if (meta == null) return '';
@@ -1637,7 +1812,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
   }
 
   Future<MediaItem> _buildMediaItem(File file, SongMeta meta) async {
-    final title = (meta.title?.isNotEmpty == true) ? meta.title! : p.basenameWithoutExtension(file.path);
+    final title = TitleCleaner.title(meta.title, path: file.path);
     final artistForDisplay = _displayArtist(meta.artist);
     final albumForDisplay = meta.album ?? p.basename(p.dirname(file.path));
 
@@ -1972,6 +2147,36 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     // Reorder or a bulkier change — rebuild in place at the exact same
     // position rather than trying to generically diff an arbitrary
     // permutation.
+    // Single move (e.g. "Play next" on a song already in the queue)? Relocate
+    // it natively so playback is never interrupted and the native index stays
+    // in sync with the queue (a full setAudioSource rebuild here raced with the
+    // Next button and stale index events).
+    if (newList.length == oldList.length) {
+      var d = 0;
+      while (d < oldList.length && oldList[d] == newList[d]) {
+        d++;
+      }
+      if (d < oldList.length) {
+        final candidates = <List<int>>[
+          [d, newList.indexOf(oldList[d])], // old[d] moved later
+          [oldList.indexOf(newList[d]), d], // new[d] moved earlier
+        ];
+        for (final c in candidates) {
+          final from = c[0], to = c[1];
+          if (from < 0 || to < 0 || from >= source.length || to >= source.length) continue;
+          final cand = List<String>.from(oldList);
+          cand.insert(to, cand.removeAt(from));
+          if (listEquals(cand, newList)) {
+            unawaited(source.move(from, to).then((_) {
+              _lastHandledNativeIndex = _audioPlayer.currentIndex;
+            }));
+            _lastSyncedQueueSnapshot = List<String>.from(newList);
+            return;
+          }
+        }
+      }
+    }
+
     unawaited(_rebuildNativeQueueInPlace(newList, currentPath));
   }
 
@@ -2050,6 +2255,33 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     }
   }
 
+  /// Native index of the queue neighbour (+1 / -1) of the playing track,
+  /// resolved by PATH from PlaylistContext (the source of truth for queue
+  /// order, including "Play next" edits) against the native sequence tags,
+  /// so a stale or shifted native index can never pick the wrong song.
+  /// Null at the queue boundary or when the two disagree (callers then use
+  /// the plain native/wrap behaviour).
+  int? _nativeNeighborIndex(ConcatenatingAudioSource source, int delta) {
+    final playlist = PlaylistContext.getCurrentPlaylist();
+    final cur = PlaylistContext.currentPathNotifier.value;
+    if (playlist == null || cur == null) return null;
+    final i = playlist.indexOf(cur);
+    final j = i + delta;
+    if (i == -1 || j < 0 || j >= playlist.length) return null;
+    final want = playlist[j];
+    for (var n = 0; n < source.sequence.length; n++) {
+      final tag = source.sequence[n].tag;
+      if (tag is Map && tag['filePath'] == want) return n;
+    }
+    return null;
+  }
+
+  Future<void> _seekNativeIndex(int index) async {
+    _lastHandledNativeIndex = null;
+    await _audioPlayer.seek(Duration.zero, index: index);
+    if (!_audioPlayer.playing) unawaited(_audioPlayer.play());
+  }
+
   Future<void> _playNext() async {
     if (RadioPlaybackContext.isActive) return;
 
@@ -2059,7 +2291,10 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
         !_isRepeatOne &&
         PlaylistContext.currentPathNotifier.value != null) {
       final curIdx = _audioPlayer.currentIndex ?? 0;
-      if (curIdx < concatSource.length - 1) {
+      final navTarget = _nativeNeighborIndex(concatSource, 1);
+      if (navTarget != null) {
+        await _seekNativeIndex(navTarget);
+      } else if (curIdx < concatSource.length - 1) {
         await _audioPlayer.seekToNext();
       } else {
         final wrapPlaylist = PlaylistContext.getCurrentPlaylist();
@@ -2118,7 +2353,10 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
         !_isRepeatOne &&
         PlaylistContext.currentPathNotifier.value != null) {
       final curIdx = _audioPlayer.currentIndex ?? 0;
-      if (curIdx > 0) {
+      final navTarget = _nativeNeighborIndex(concatSource, -1);
+      if (navTarget != null) {
+        await _seekNativeIndex(navTarget);
+      } else if (curIdx > 0) {
         await _audioPlayer.seekToPrevious();
       } else {
         final wrapPlaylist = PlaylistContext.getCurrentPlaylist();
@@ -2306,7 +2544,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
 
   Future<void> _openAudioConversionSheet(File file) async {
     final meta = _metaCache[file.path];
-    final title = (meta?.title?.isNotEmpty == true) ? meta!.title! : p.basenameWithoutExtension(file.path);
+    final title = TitleCleaner.title(meta?.title, path: file.path);
     await showAudioConversionSheet(
       context: context,
       song: file,
@@ -2337,7 +2575,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
 
   Future<void> _openAudioCutterPage(File file) async {
     final meta = _metaCache[file.path];
-    final title = (meta?.title?.isNotEmpty == true) ? meta!.title! : p.basenameWithoutExtension(file.path);
+    final title = TitleCleaner.title(meta?.title, path: file.path);
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => AudioCutterPage(
         song: file,
@@ -2507,40 +2745,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
   }
 
   Future<void> _addFileToQueue(String path) async {
-    try {
-      final List<String> currentQueue = List<String>.from(PlaylistContext.getCurrentPlaylist() ?? _audioFiles.map((f) => f.path).toList());
-      final String? currentPath = PlaylistContext.currentPathNotifier.value;
-
-      if (currentQueue.contains(path)) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Already in queue'), backgroundColor: AppPalette.accent, behavior: SnackBarBehavior.floating));
-        }
-        return;
-      } else {
-        if (currentPath != null) {
-          final currentIndexInQueue = currentQueue.indexOf(currentPath);
-          if (currentIndexInQueue != -1) {
-            currentQueue.insert(currentIndexInQueue + 1, path);
-          } else {
-            currentQueue.add(path);
-          }
-        } else {
-          currentQueue.add(path);
-        }
-      }
-
-      PlaylistContext.setCurrentPlaylist(currentQueue, pageId: PlaylistContext.getCurrentPageId() ?? 'songs');
-      await PlaylistService.saveQueue(currentQueue);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: const Text('Added to queue'), backgroundColor: _primaryColor, behavior: SnackBarBehavior.floating, duration: const Duration(seconds: 2)));
-      }
-    } catch (e) {
-      debugPrint('Add to queue failed: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: const Text('Add to queue failed'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
-      }
-    }
+    QueueActions.addToQueueWithFeedback(context, [path]);
   }
 
   void _toggleRepeatMode() {
@@ -2704,9 +2909,12 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     SongSort.changes.removeListener(_rebuildSongDisplayList);
     AppPalette.changes.removeListener(_onPaletteChanged);
     if (_current == this) _current = null;
+    ShortcutActions.instance.detach();
     WidgetsBinding.instance.removeObserver(this);
     _libraryTabController.dispose();
     FavoritesNotifier.instance.removeListener(_onFavoritesChanged);
+    PlaylistContext.shuffleEnabledNotifier.removeListener(_scheduleNotificationRefresh);
+    _notifRefreshTimer?.cancel();
     _sleepSub?.cancel();
     _searchDebounce?.cancel();
     _songsSearchController.dispose();
@@ -2787,7 +2995,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     if (_currentIndex == -1 && PlaylistContext.currentPathNotifier.value == null) return;
     if (_isOpeningFullScreenPlayer) return;
     _isOpeningFullScreenPlayer = true;
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => FullScreenPlayer(
+    Navigator.of(context).push(nowPlayingRoute((_) => FullScreenPlayer(
       audioPlayer: _audioPlayer,
       audioFiles: _audioFiles,
       initialIndex: _currentIndex,
@@ -2819,7 +3027,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
       onOpenSleepTimer: () { _openSettingsPage(openSleepTimer: true); },
       onEqualizerChange: (bool enabled, Map<int, double> gains) { },
       onAudioConversionDone: (record) => _handleConvertedSong(record),
-    ), fullscreenDialog: true)).then((_) => _isOpeningFullScreenPlayer = false);
+    ))).then((_) => _isOpeningFullScreenPlayer = false);
   }
 
   /// Merged "Library" AppBar — hosts the Overview/Songs internal TabBar.
@@ -2827,12 +3035,12 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
   /// list, so they're shown only while the Songs sub-tab is active; the
   /// Overview sub-tab gets the same plain title ListPage's own AppBar used
   /// to show standalone.
-  AppBar _buildLibraryAppBar() {
+  PreferredSizeWidget _buildLibraryAppBar() {
     final showSongsActions = _libraryTabController.index == 1;
-    return AppBar(
+    return AppPageBar(
+      title: context.l10n.navLibrary,
       backgroundColor: _effectiveIsDark ? AppPalette.darkBackground : Colors.white,
-      elevation: 0,
-      centerTitle: !(showSongsActions && _isSearchingInSongs),
+      foregroundColor: _textColor,
       leading: showSongsActions
           ? ValueListenableBuilder<bool>(
               valueListenable: PlaylistContext.shuffleEnabledNotifier,
@@ -2846,31 +3054,30 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
                   } catch (e) {
                     debugPrint('setShuffleModeEnabled error: $e');
                   }
-                  final label = newVal ? 'Shuffle: On' : 'Shuffle: Off';
+                  final label = newVal ? context.l10n.tipShuffleOn : context.l10n.tipShuffleOff;
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(label), backgroundColor: _primaryColor, behavior: SnackBarBehavior.floating, duration: const Duration(seconds: 2)));
                 },
-                tooltip: shuffleOn ? 'Shuffle: On' : 'Shuffle: Off',
+                tooltip: shuffleOn ? context.l10n.tipShuffleOn : context.l10n.tipShuffleOff,
               ),
             )
           : null,
-      title: (showSongsActions && _isSearchingInSongs)
+      titleWidget: (showSongsActions && _isSearchingInSongs)
           ? TextField(
               controller: _songsSearchController,
               focusNode: _songsSearchFocusNode,
               style: TextStyle(color: _textColor, fontSize: 16),
-              decoration: InputDecoration(hintText: 'Search songs...', hintStyle: TextStyle(color: _subtitleColor), border: InputBorder.none, contentPadding: EdgeInsets.zero),
+              decoration: InputDecoration(hintText: context.l10n.searchSongsHint, hintStyle: TextStyle(color: _subtitleColor), border: InputBorder.none, contentPadding: EdgeInsets.zero),
             )
-          : Text('Library', style: TextStyle(color: _textColor)),
-      iconTheme: IconThemeData(color: _textColor),
-      titleTextStyle: TextStyle(color: _textColor, fontSize: 20, fontWeight: FontWeight.w600),
+          : null,
       actions: showSongsActions
           ? [
-              IconButton(icon: Icon(Icons.sort_rounded, color: _textColor), onPressed: _openSortSheet, tooltip: 'Sort songs'),
-              IconButton(icon: Icon(Icons.refresh, color: _textColor), onPressed: _refreshSongs, tooltip: 'Refresh songs'),
+              IconButton(icon: Icon(Icons.sort_rounded, color: _textColor), onPressed: _openSortSheet, tooltip: context.l10n.tipSortSongs),
+              IconButton(icon: Icon(Icons.refresh, color: _textColor), onPressed: _refreshSongs, tooltip: context.l10n.tipRefreshSongs),
+              IconButton(icon: Icon(Icons.manage_search_rounded, color: _textColor), onPressed: _openGlobalSearch, tooltip: context.l10n.tipSearchEverywhere),
               if (!_isSearchingInSongs)
-                IconButton(icon: Icon(Icons.search, color: _textColor), onPressed: _toggleSearchInSongsPage, tooltip: 'Search')
+                IconButton(icon: Icon(Icons.search, color: _textColor), onPressed: _toggleSearchInSongsPage, tooltip: context.l10n.tipSearch)
               else
-                IconButton(icon: Icon(Icons.close, color: _textColor), onPressed: _toggleSearchInSongsPage, tooltip: 'Close search'),
+                IconButton(icon: Icon(Icons.close, color: _textColor), onPressed: _toggleSearchInSongsPage, tooltip: context.l10n.tipCloseSearch),
             ]
           : const [],
       bottom: TabBar(
@@ -2878,7 +3085,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
         labelColor: _primaryColor,
         unselectedLabelColor: _subtitleColor,
         indicatorColor: _primaryColor,
-        tabs: const [Tab(text: 'Overview'), Tab(text: 'Songs')],
+        tabs: [Tab(text: context.l10n.tabOverview), Tab(text: context.l10n.tabSongs)],
       ),
     );
   }
@@ -2905,10 +3112,47 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
           onOpenAlbums: _openAlbumsPage,
           onOpenGenres: _openGenresPage,
           onOpenSmartMix: _openSmartMixPage,
+          loading: _isLoading,
+          nowPlayingPath: (_currentIndex >= 0 && _currentIndex < _audioFiles.length) ? _audioFiles[_currentIndex].path : null,
+          nowPlaying: _isPlaying,
+          progress: _totalDuration.inMilliseconds > 0
+              ? (_currentPosition.inMilliseconds / _totalDuration.inMilliseconds).clamp(0.0, 1.0).toDouble()
+              : 0.0,
+          onTogglePlay: () => _isPlaying ? _pauseAudio() : _resumeAudio(),
+          onShuffleAll: _shuffleAll,
+          resolveArtist: (path) => TitleCleaner.artist(_metaCache[path]?.artist),
+          resolveAlbum: (path) {
+            final a = _metaCache[path]?.album?.trim();
+            return (a == null || a.isEmpty) ? null : a;
+          },
         ),
         _buildSongsBody(),
       ],
     );
+  }
+
+  /// Turns shuffle on and starts a random song (Overview chip + launcher shortcut).
+  Future<void> _shuffleAll() async {
+    if (_audioFiles.isEmpty) return;
+    PlaylistContext.setShuffleEnabled(true);
+    try { await _audioPlayer.setShuffleModeEnabled(true); } catch (_) {}
+    _playAudio(math.Random().nextInt(_audioFiles.length), source: 'list');
+  }
+
+  /// Launcher shortcut routed from Kotlin (see lib/shortcuts/shortcut_actions.dart).
+  Future<void> _onShortcutAction(String action) async {
+    if (!mounted) return;
+    if (action == 'search') {
+      _openGlobalSearch();
+    } else if (action == 'shuffle_all') {
+      // A cold start may reach here before the first scan finished: give it
+      // one short grace period instead of silently doing nothing.
+      if (_audioFiles.isEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
+        if (!mounted) return;
+      }
+      await _shuffleAll();
+    }
   }
 
   Widget _buildSectionHeader(String letter) {
@@ -2917,7 +3161,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
       margin: const EdgeInsets.only(bottom: 8, top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: _effectiveIsDark ? const Color(0xFF1A1A1A) : const Color(0xFFF0F4FA),
+        color: _effectiveIsDark ? AppPalette.darkCard.withValues(alpha: 0.55) : const Color(0xFFF0F4FA),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
@@ -3061,7 +3305,10 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
             final originalIndex = item.originalIndex ?? _audioIndexByPath[file.path] ?? -1;
             final selected = (_currentPlaylistSource == 'songs') && (originalIndex == _currentIndex);
 
-            return _SongRow(
+            return StaggerIn(
+              playKey: 'songs:${file.path}',
+              index: index,
+              child: _SongRow(
               key: ValueKey<String>(file.path),
               file: file,
               selected: selected,
@@ -3095,6 +3342,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
               onEditTags: () => Navigator.of(context).push(MaterialPageRoute(
                 builder: (_) => TagEditorPage(path: file.path, isDark: _effectiveIsDark),
               )),
+            ),
             );
           },
         ),
@@ -3102,8 +3350,8 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     ]);
   }
 
-  Widget _buildCurrentPage() {
-    switch (_selectedTabIndex) {
+  Widget _buildPageFor(int tabIndex) {
+    switch (tabIndex) {
       case 0:
         return _buildLibraryBody();
       case 1:
@@ -3121,11 +3369,10 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
           isDark: _effectiveIsDark,
           resolveTitle: (file) {
             final meta = _metaCache[file.path];
-            return (meta?.title?.isNotEmpty == true) ? meta!.title! : p.basenameWithoutExtension(file.path);
+            return TitleCleaner.title(meta?.title, path: file.path);
           },
           resolveArtist: (file) {
-            final artist = _metaCache[file.path]?.artist;
-            return (artist != null && artist.isNotEmpty) ? artist : null;
+            return TitleCleaner.artist(_metaCache[file.path]?.artist);
           },
           resolveCover: (path) => _metaCache[path]?.cover,
         );
@@ -3142,7 +3389,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
           audioFiles: _audioFiles,
           resolveSongTitle: (file) {
             final meta = _metaCache[file.path];
-            return (meta?.title?.isNotEmpty == true) ? meta!.title! : p.basenameWithoutExtension(file.path);
+            return TitleCleaner.title(meta?.title, path: file.path);
           },
           resolveSongDuration: (file) => _metaCache[file.path]?.duration,
           onCutSaved: (record) => _handleCutSong(record),
@@ -3150,6 +3397,25 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
       default:
         return _buildLibraryBody();
     }
+  }
+
+  void _openGlobalSearch() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => SearchPage(
+        audioFiles: _audioFiles,
+        isDark: _effectiveIsDark,
+        resolveMeta: (path) {
+          final m = _metaCache[path];
+          return SearchMeta(title: m?.title, artist: m?.artist, album: m?.album);
+        },
+        loadCover: (path) async => (await _loadFullMetadata(File(path))).cover,
+        onPlay: (path, queue) {
+          PlaylistContext.setCurrentPlaylist(queue, pageId: 'search', folderPath: null);
+          PlaylistService.saveQueue(queue);
+          _playAudioByPath(path, source: 'search');
+        },
+      ),
+    ));
   }
 
   void _openAlbumsPage() {
@@ -3306,7 +3572,12 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
     return Scaffold(
       backgroundColor: _backgroundColor,
       appBar: _selectedTabIndex == 0 ? _buildLibraryAppBar() : null,
-      body: _buildCurrentPage(),
+      // Tabs are built lazily and kept alive, so scroll positions survive
+      // switching; only the fade-through animates.
+      body: TabBodySwitcher(
+        index: _selectedTabIndex,
+        builders: List.generate(5, (i) => (_) => _buildPageFor(i)),
+      ),
       bottomNavigationBar: Container(
         color: _bottomNavBackground,
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -3314,7 +3585,16 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
           const BannerAdWidget(useSafeArea: false),
           Container(
             decoration: BoxDecoration(
-              color: _bottomNavCardColor,
+              // Logo theme (dark mode, non-AMOLED): the icon's own background
+              // gradient instead of a flat card colour.
+              color: _useLogoNavGradient ? null : _bottomNavCardColor,
+              gradient: _useLogoNavGradient
+                  ? LinearGradient(
+                      colors: AppPalette.backgroundGradient!,
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    )
+                  : null,
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withOpacity(_effectiveIsDark ? 0.3 : 0.1),
@@ -3329,32 +3609,24 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
             ),
             child: SafeArea(
               bottom: true,
-              child: SizedBox(
-                height: 76,
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: BottomNavigationBar(
-                        items: const [
-                          BottomNavigationBarItem(icon: Icon(Icons.library_music), label: 'Library'),
-                          BottomNavigationBarItem(icon: Icon(Icons.radio), label: 'Radio'),
-                          // Highlighted centre destination: Duo Mode.
-                          BottomNavigationBarItem(icon: _DuoNavIcon(selected: false), activeIcon: _DuoNavIcon(selected: true), label: 'Duo'),
-                          BottomNavigationBarItem(icon: Icon(Icons.graphic_eq), label: 'Converter'),
-                          BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Settings'),
-                        ],
-                        currentIndex: _selectedTabIndex,
-                        selectedItemColor: _primaryColor,
-                        unselectedItemColor: _bottomNavSubtitleColor,
-                        onTap: _onNavTap,
-                        type: BottomNavigationBarType.fixed,
-                        backgroundColor: Colors.transparent,
-                        elevation: 0,
-                        selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ],
-                ),
+              child: AnimatedNavBar(
+                destinations: [
+                  NavDestination(Icons.library_music, context.l10n.navLibrary),
+                  NavDestination(Icons.radio, context.l10n.navRadio),
+                  // Highlighted centre destination: Duo Mode.
+                  NavDestination(Icons.headphones_rounded, context.l10n.navDuo),
+                  NavDestination(Icons.graphic_eq, context.l10n.navConverter),
+                  NavDestination(Icons.settings, context.l10n.navSettings),
+                ],
+                tabHint: (i, n) => context.l10n.navTabSemantics(i + 1, n),
+                centerIndex: 2,
+                centerColors: const [kDuoLeftColor, kDuoRightColor],
+                currentIndex: _selectedTabIndex,
+                // Lightened on dark surfaces so the selected label keeps 4.5:1
+                // against the logo gradient (violet alone was ~3.6:1).
+                selectedColor: AppPalette.accentText(dark: _effectiveIsDark),
+                unselectedColor: _bottomNavSubtitleColor,
+                onTap: _onNavTap,
               ),
             ),
           ),
@@ -3367,48 +3639,6 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> with WidgetsBindi
         child: const Icon(Icons.refresh, color: Colors.white),
       )
           : null,
-    );
-  }
-}
-
-/// Raised gradient button for the centre "Duo" bottom-nav destination. It
-/// lays out at a normal icon's 24px height (so its label lines up with the
-/// other tabs) and paints the larger circle overflowing upward.
-class _DuoNavIcon extends StatelessWidget {
-  final bool selected;
-  const _DuoNavIcon({required this.selected});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 46,
-      height: 24,
-      child: OverflowBox(
-        maxHeight: 46,
-        alignment: Alignment.bottomCenter,
-        child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        width: 46,
-        height: 46,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: const LinearGradient(
-            colors: [kDuoLeftColor, kDuoRightColor],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          border: Border.all(color: Colors.white.withOpacity(selected ? 0.9 : 0.0), width: 2),
-          boxShadow: [
-            BoxShadow(
-              color: kDuoRightColor.withOpacity(selected ? 0.55 : 0.3),
-              blurRadius: selected ? 16 : 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: const Icon(Icons.headphones_rounded, color: Colors.white, size: 24),
-        ),
-      ),
     );
   }
 }
@@ -3490,6 +3720,8 @@ class _SongRow extends StatefulWidget {
 }
 
 class _SongRowState extends State<_SongRow> {
+  bool _pressed = false;
+
   @override
   void initState() {
     super.initState();
@@ -3527,17 +3759,34 @@ class _SongRowState extends State<_SongRow> {
     final albumYear = widget.albumAndYear(meta);
     // Same rule as the sort key and A-Z headers (_songTitleForSort): the title
     // tag, else the file name without its extension.
-    final tagTitle = meta?.title?.trim();
-    final titleText = (tagTitle != null && tagTitle.isNotEmpty) ? tagTitle : p.basenameWithoutExtension(widget.file.path);
+    final titleText = TitleCleaner.title(meta?.title, path: widget.file.path);
+    final reduceMotion = LibraryMotion.reduced(context);
 
+    final l = context.l10n;
+    // One screen-reader node for the row; the favorite and ⋮ buttons stay
+    // separate nodes. Decorative art / bars are excluded below.
+    final rowLabel = l.songRowSemantics(
+        titleText, artistText, widget.selected ? l.nowPlayingState : l.notPlayingState);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
-          onTap: widget.onTap,
+        child: Semantics(
+          label: rowLabel,
+          button: true,
+          selected: widget.selected,
+          child: InkWell(
+          onTap: () {
+            HapticFeedback.selectionClick();
+            widget.onTap();
+          },
+          onHighlightChanged: reduceMotion ? null : (v) => setState(() => _pressed = v),
           borderRadius: BorderRadius.circular(16),
-          child: Container(
+          child: AnimatedScale(
+            scale: _pressed ? 0.98 : 1.0,
+            duration: const Duration(milliseconds: 90),
+            curve: Curves.easeOut,
+            child: Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: widget.selected ? widget.primaryColor.withOpacity(0.12) : widget.cardColor,
@@ -3546,7 +3795,7 @@ class _SongRowState extends State<_SongRow> {
               boxShadow: [BoxShadow(color: Colors.black.withOpacity(widget.isDark ? 0.1 : 0.05), blurRadius: 8, offset: const Offset(0, 2))],
             ),
             child: Row(children: [
-              ClipRRect(
+              ExcludeSemantics(child: ClipRRect(
                 borderRadius: BorderRadius.circular(10),
                 child: SizedBox(
                   width: 44,
@@ -3558,26 +3807,27 @@ class _SongRowState extends State<_SongRow> {
                     child: Icon(Icons.music_note, color: widget.subtitleColor, size: 20),
                   ),
                 ),
-              ),
+              )),
               const SizedBox(width: 12),
               Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(widget.truncate(titleText), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontWeight: FontWeight.w600, color: widget.selected ? widget.primaryColor : widget.textColor, fontSize: 14)),
+                child: ExcludeSemantics(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(titleText, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontWeight: FontWeight.w600, color: widget.selected ? widget.primaryColor : widget.textColor, fontSize: 14)),
                   const SizedBox(height: 4),
                   Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(artistText, style: TextStyle(color: widget.selected ? widget.primaryColor.withOpacity(0.8) : widget.subtitleColor, fontSize: 12, fontWeight: FontWeight.w600)),
                     if (albumYear.isNotEmpty) Text(albumYear, style: TextStyle(color: widget.selected ? widget.primaryColor.withOpacity(0.7) : widget.subtitleColor, fontSize: 11)),
                   ]),
-                ]),
+                ])),
               ),
               AnimatedFavoriteButton(
                 isFavorite: widget.isFav,
                 inactiveColor: widget.subtitleColor,
                 onPressed: widget.onToggleFavorite,
                 padding: const EdgeInsets.all(4),
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
               ),
               PopupMenuButton<int>(
+                tooltip: l.moreOptionsFor(titleText),
                 icon: Icon(Icons.more_vert, color: widget.subtitleColor),
                 onSelected: (value) {
                   switch (value) {
@@ -3596,6 +3846,9 @@ class _SongRowState extends State<_SongRow> {
                     case 5:
                       widget.onAddToQueue();
                       break;
+                    case 9:
+                      QueueActions.playNextWithFeedback(context, [widget.file.path]);
+                      break;
                     case 6:
                       widget.onAudioConversion();
                       break;
@@ -3612,19 +3865,21 @@ class _SongRowState extends State<_SongRow> {
                   PopupMenuItem(value: 1, child: Text('Equalizer')),
                   PopupMenuItem(value: 2, child: Text('Sleep timer')),
                   PopupMenuItem(value: 3, child: Text('Share')),
+                  PopupMenuItem(value: 9, child: Text('Play next')),
                   PopupMenuItem(value: 5, child: Text('Add to Queue')),
                   PopupMenuItem(value: 6, child: Text('Audio Conversion')),
                   PopupMenuItem(value: 7, child: Text('Audio Cutter')),
                   PopupMenuItem(value: 8, child: Text('Edit tags')),
                 ],
               ),
-              if (widget.selected && widget.isPlaying)
-                Icon(Icons.equalizer, color: widget.primaryColor, size: 20)
+              if (widget.selected)
+                EqualizerBars(color: widget.primaryColor, playing: widget.isPlaying)
               else
-                Icon(Icons.play_arrow, color: widget.subtitleColor, size: 20),
+                ExcludeSemantics(child: Icon(Icons.play_arrow, color: widget.subtitleColor, size: 20)),
             ]),
+            ),
           ),
-        ),
+        )),
       ),
     );
   }

@@ -17,7 +17,10 @@ class MediaStoreAudio {
 
   /// Seconds since epoch (MediaStore DATE_ADDED).
   final int dateAdded;
-  const MediaStoreAudio(this.path, this.durationMs, this.dateAdded);
+
+  /// File size in bytes (0 when unknown).
+  final int sizeBytes;
+  const MediaStoreAudio(this.path, this.durationMs, this.dateAdded, [this.sizeBytes = 0]);
 }
 
 /// Technical details of one audio file (format, bitrate, sample rate…).
@@ -55,6 +58,7 @@ class MediaStoreService {
               path,
               (entry['duration'] as num?)?.toInt() ?? 0,
               (entry['dateAdded'] as num?)?.toInt() ?? 0,
+              (entry['size'] as num?)?.toInt() ?? 0,
             ));
           }
         }

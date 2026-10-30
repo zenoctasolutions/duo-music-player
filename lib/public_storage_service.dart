@@ -44,6 +44,9 @@ class PublicStorageService {
 
   int? _cachedSdkInt;
 
+  /// Device API level (cached); 29 if it cannot be determined.
+  Future<int> sdkInt() => _sdkInt();
+
   Future<int> _sdkInt() async {
     final cached = _cachedSdkInt;
     if (cached != null) return cached;

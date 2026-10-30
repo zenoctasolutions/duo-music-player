@@ -3,11 +3,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'app_palette.dart';
 import 'ad_widgets.dart';
+import 'public_storage_service.dart';
 
 bool isDark(BuildContext context) =>
     Theme.of(context).brightness == Brightness.dark;
@@ -55,43 +55,50 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
     super.dispose();
   }
 
-  Future<bool> _checkPermission() async {
-    if (!Platform.isAndroid) return true;
+  /// Scratch location the download is written to first (app-private, needs
+  /// no permission). On Android it is then published to the public Downloads
+  /// folder through MediaStore (PublicStorageService).
+  Future<String> _getSavePath(String filename) async {
+    final dir = Platform.isAndroid
+        ? await getTemporaryDirectory()
+        : await getApplicationDocumentsDirectory();
+    return p.join(dir.path, p.basename(filename));
+  }
 
-    try {
-      if (await Permission.manageExternalStorage.isDenied) {
-        final res = await Permission.manageExternalStorage.request();
-        if (res.isGranted) return true;
-      } else if (await Permission.manageExternalStorage.isGranted) {
-        return true;
-      }
-
-      if (await Permission.storage.isGranted) return true;
-      final status = await Permission.storage.request();
-      return status.isGranted;
-    } catch (_) {
-      return false;
+  String _mimeFor(String name) {
+    switch (p.extension(name).toLowerCase()) {
+      case '.m4a':
+      case '.aac':
+        return 'audio/mp4';
+      case '.wav':
+        return 'audio/wav';
+      case '.flac':
+        return 'audio/flac';
+      case '.ogg':
+      case '.opus':
+        return 'audio/ogg';
+      case '.mp4':
+        return 'video/mp4';
+      case '.mkv':
+        return 'video/x-matroska';
+      default:
+        return 'audio/mpeg';
     }
   }
 
-  Future<String?> _getSavePath(String filename) async {
+  /// Android: copy the scratch file into Downloads via MediaStore and return
+  /// the public path (or the scratch path if none is reported).
+  Future<String> _finalize(String tempPath, String filename) async {
+    if (!Platform.isAndroid) return tempPath;
+    final pub = await PublicStorageService.instance.publish(
+      sourcePath: tempPath,
+      displayName: p.basename(filename),
+      mimeType: _mimeFor(filename),
+    );
     try {
-      if (Platform.isAndroid) {
-        final publicDownloads = Directory('/storage/emulated/0/Download');
-        if (await publicDownloads.exists()) {
-          return p.join(publicDownloads.path, filename);
-        }
-        final ext = await getExternalStorageDirectory();
-        if (ext != null) return p.join(ext.path, filename);
-      } else {
-        final doc = await getApplicationDocumentsDirectory();
-        return p.join(doc.path, filename);
-      }
-    } catch (e) {
-      final doc = await getApplicationDocumentsDirectory();
-      return p.join(doc.path, filename);
-    }
-    return null;
+      await File(tempPath).delete();
+    } catch (_) {}
+    return pub.path ?? p.join('Downloads', p.basename(filename));
   }
 
   String _fileNameFromHeaders(Response response, String url) {
@@ -155,8 +162,6 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
       _downloadedFilePath = null;
     });
 
-    await _checkPermission();
-
     try {
       String filename = 'media_${DateTime.now().millisecondsSinceEpoch}.mp3';
       try {
@@ -175,10 +180,9 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
         }
       }
 
-      final savePath = await _getSavePath(filename);
-      if (savePath == null) throw Exception('Unable to determine save path');
+      final tempPath = await _getSavePath(filename);
 
-      final parent = Directory(p.dirname(savePath));
+      final parent = Directory(p.dirname(tempPath));
       if (!await parent.exists()) await parent.create(recursive: true);
 
       setState(() {
@@ -187,7 +191,8 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
 
       if (url.startsWith('/') && await File(url).exists()) {
         final src = File(url);
-        await src.copy(savePath);
+        await src.copy(tempPath);
+        final savePath = await _finalize(tempPath, filename);
 
         setState(() {
           _isDownloading = false;
@@ -201,7 +206,7 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
 
       await _dio.download(
         url,
-        savePath,
+        tempPath,
         onReceiveProgress: (received, total) {
           if (total > 0) {
             setState(() {
@@ -223,6 +228,7 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
         ),
       );
 
+      final savePath = await _finalize(tempPath, filename);
       setState(() {
         _isDownloading = false;
         _progress = 1.0;
@@ -251,7 +257,7 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
     final cardColor = dark ? AppPalette.darkCard : Colors.white;
     final textColor = dark ? Colors.white : Colors.black;
     final secondary = dark ? Colors.grey.shade400 : Colors.black54;
-    final inputFill = dark ? const Color(0xFF2C2C2C) : Colors.grey.shade100;
+    final inputFill = dark ? AppPalette.darkCard : Colors.grey.shade100;
 
     // 3. Status Bar Style
     final overlayStyle =
@@ -271,7 +277,7 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
           // AppBar color matches the Settings page AppBar (SettingsColors.appBarBackground).
           backgroundColor: dark ? AppPalette.darkBackground : Colors.white,
           elevation: 0,
-          leading: IconButton(
+          leading: IconButton(tooltip: 'Back', 
             icon: Icon(Icons.arrow_back, color: textColor),
             onPressed: () => Navigator.of(context).pop(),
           ),
@@ -333,7 +339,7 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
                               borderRadius: BorderRadius.circular(12),
                               borderSide: BorderSide.none),
                           prefixIcon: Icon(Icons.link, color: kPrimary),
-                          suffixIcon: IconButton(
+                          suffixIcon: IconButton(tooltip: 'Paste', 
                             icon: Icon(Icons.paste, color: secondary),
                             onPressed: () async {
                               final data =
@@ -450,6 +456,7 @@ class _AudioDownloadPageState extends State<AudioDownloadPage>
                               ]),
                         ),
                         IconButton(
+                          tooltip: 'Open file',
                           onPressed: () async {
                             try {
                               final file = File(_downloadedFilePath!);

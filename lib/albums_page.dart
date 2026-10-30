@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:music/player_screen.dart';
 import 'package:path/path.dart' as p;
@@ -13,17 +14,33 @@ import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'list_page.dart';
 import 'songs_page.dart' show GlobalMiniPlayer; // Import GlobalMiniPlayer
 import 'banner_ad_widget2.dart';
-import 'app_palette.dart';
 import 'ad_widgets.dart';
+import 'library/title_cleaner.dart';
+import 'library/library_motion.dart';
+import 'library/widgets/library_widgets.dart';
+import 'motion/motion_kit.dart';
+import 'player/art_colors.dart';
+import 'ui/app_page_bar.dart';
+import 'library/queue_menu.dart';
 
+
+/// Display-only: drops a trailing "(2012)" / " - (2012)" from an album title
+/// when the year is shown elsewhere. Never used for grouping keys.
+String stripTrailingYear(String title, {required bool yearShownElsewhere}) {
+  if (!yearShownElsewhere) return title;
+  final out = title.replaceFirst(RegExp(r'\s*(?:[-\u2013]\s*)?\(\s*(?:19|20)\d{2}\s*\)\s*$'), '').trim();
+  return out.isEmpty ? title : out;
+}
 
 class SongMetadata {
   final String? title;
   final String? artist;
   final String? album;
   final Uint8List? coverArt;
+  final int? year;
+  final Duration? duration;
 
-  SongMetadata({this.title, this.artist, this.album, this.coverArt});
+  SongMetadata({this.title, this.artist, this.album, this.coverArt, this.year, this.duration});
 
   bool get hasMetadata =>
       (title != null && title!.isNotEmpty) ||
@@ -70,8 +87,6 @@ class AlbumsPage extends StatefulWidget {
 }
 
 class _AlbumsPageState extends State<AlbumsPage> {
-  final Color _primaryColor = AppPalette.accent;
-
   final Map<String, SongMetadata> _metadataCache = {};
 
   // Grouped by Album Name
@@ -86,6 +101,10 @@ class _AlbumsPageState extends State<AlbumsPage> {
 
   bool _searchActive = false;
 
+  static const String _kViewPref = 'albums_grid_view';
+  bool _grid = true;
+  bool _metaLoaded = false;
+
   // Active group (Album name) + index inside that group.
   String? _activeGroupKey;
   int? _activeIndexInGroup;
@@ -96,6 +115,9 @@ class _AlbumsPageState extends State<AlbumsPage> {
     _allFiles = widget.audioFiles;
     _prepareAlbums();
     _preloadMetadata();
+    LibViewPref.loadGrid(_kViewPref).then((g) {
+      if (mounted && g != _grid) setState(() => _grid = g);
+    });
 
     _searchController.addListener(() {
       _onSearchChanged(_searchController.text);
@@ -157,12 +179,18 @@ class _AlbumsPageState extends State<AlbumsPage> {
   }
 
   Future<void> _preloadMetadata() async {
+    var n = 0;
     for (var f in _allFiles) {
       if (!_metadataCache.containsKey(f.path)) {
+        // readMetadata is synchronous; yield so the skeleton keeps animating.
+        if (++n % 8 == 0) await Future<void>.delayed(Duration.zero);
         final meta = await _loadMetadata(f.path);
+        if (!mounted) return;
         _metadataCache[f.path] = meta;
       }
     }
+    if (!mounted) return;
+    _metaLoaded = true;
     _prepareAlbums();
     _syncActiveFromPlayingIndex();
   }
@@ -186,6 +214,8 @@ class _AlbumsPageState extends State<AlbumsPage> {
         artist: data.artist,
         album: data.album,
         coverArt: art,
+        year: data.year?.year,
+        duration: data.duration,
       );
     } catch (_) {
       return SongMetadata();
@@ -195,6 +225,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
   void _onSearchChanged(String value) {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 250), () {
+      if (!mounted) return;
       setState(() => _query = value.trim());
       _applySearch();
     });
@@ -393,136 +424,249 @@ class _AlbumsPageState extends State<AlbumsPage> {
 
   // --- UI Components ---
 
-  Widget _albumArtSmall(Uint8List? bytes, bool isDark) {
-    if (bytes != null) {
-      return Image.memory(bytes, fit: BoxFit.cover);
+  int? _albumYear(List<FileSystemEntity> songs) {
+    for (final s in songs) {
+      final y = _metadataCache[s.path]?.year;
+      if (y != null && y > 0) return y;
     }
-    return Container(
-      color: isDark ? Colors.grey.shade800 : Colors.grey.shade300,
-      child: Icon(
-        Icons.album,
-        color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
-        size: 24,
+    return null;
+  }
+
+  Uint8List? _albumCover(List<FileSystemEntity> songs) {
+    for (final s in songs) {
+      final c = _metadataCache[s.path]?.coverArt;
+      if (c != null && c.isNotEmpty) return c;
+    }
+    return null;
+  }
+
+  String _albumMeta(List<FileSystemEntity> songs, {bool withArtist = true}) {
+    final firstMeta = songs.isNotEmpty ? _metadataCache[songs.first.path] : null;
+    final artist = TitleCleaner.artistOrUnknown(firstMeta?.artist);
+    final year = _albumYear(songs);
+    final n = songs.length;
+    return [
+      if (withArtist) artist,
+      if (year != null) '$year',
+      '$n ${n == 1 ? 'song' : 'songs'}',
+    ].join(' · ');
+  }
+
+  void _openAlbum(String albumName, List<FileSystemEntity> songs) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AlbumDetailPage(
+          albumName: albumName,
+          songs: songs,
+          metadataCache: _metadataCache,
+          isDarkMode: widget.isDarkMode,
+          audioPlayer: widget.audioPlayer,
+          onPlay: (path, idx) async {
+            final globalIdx = widget.audioFiles.indexWhere((f) => f.path == path);
+            if (globalIdx != -1) {
+              setState(() {
+                _activeGroupKey = albumName;
+                _activeIndexInGroup = idx;
+              });
+              await _markRecentlyPlayed(path);
+              widget.onPlay?.call(path, globalIdx);
+            }
+          },
+          miniPlayer: widget.miniPlayer,
+        ),
       ),
     );
   }
 
-  Widget _albumListTile(
-      String albumName,
-      List<FileSystemEntity> songs,
-      bool isDark,
-      Color textColor,
-      Color subColor,
-      Color cardColor,
-      ) {
-    final firstSongMeta = songs.isNotEmpty ? _metadataCache[songs.first.path] : null;
-    final artist = firstSongMeta?.artist ?? "Unknown Artist";
-    final coverArt = firstSongMeta?.coverArt;
+  Widget _albumGridTile(String albumName, List<FileSystemEntity> songs, LibColors c, double tileW, int index) {
+    final title = stripTrailingYear(TitleCleaner.title(albumName), yearShownElsewhere: _albumYear(songs) != null);
+    final cover = _albumCover(songs);
+    final meta = _albumMeta(songs);
+    final px = (tileW * MediaQuery.devicePixelRatioOf(context)).round().clamp(120, 700);
+    return StaggerIn(
+      playKey: 'albums:$albumName',
+      index: index,
+      child: Semantics(
+        button: true,
+        label: 'Album $title, $meta',
+        excludeSemantics: true,
+        onTap: () => _openAlbum(albumName, songs),
+        child: PressScale(
+          onTap: () => _openAlbum(albumName, songs),
+          pressedScale: 0.965,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AspectRatio(
+                aspectRatio: 1,
+                child: LibCover(
+                  bytes: cover,
+                  seed: albumName,
+                  radius: 22,
+                  cacheSize: px,
+                  shadow: true,
+                  icon: Icons.album_rounded,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: c.text, fontSize: 15, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 2),
+              Text(meta,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: c.sub, fontSize: 12.5)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      leading: Container(
-        width: 50,
-        height: 50,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          color: cardColor,
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: _albumArtSmall(coverArt, isDark),
-        ),
-      ),
-      title: Text(
-        albumName,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: textColor,
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-      subtitle: Text(
-        artist,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(color: subColor, fontSize: 14),
-      ),
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => AlbumDetailPage(
-              albumName: albumName,
-              songs: songs,
-              metadataCache: _metadataCache,
-              isDarkMode: widget.isDarkMode,
-              audioPlayer: widget.audioPlayer,
-              onPlay: (path, idx) async {
-                final globalIdx = widget.audioFiles.indexWhere((f) => f.path == path);
-                if (globalIdx != -1) {
-                  setState(() {
-                    _activeGroupKey = albumName;
-                    _activeIndexInGroup = idx;
-                  });
-                  await _markRecentlyPlayed(path);
-                  widget.onPlay?.call(path, globalIdx);
-                }
-              },
-              miniPlayer: widget.miniPlayer,
+  Widget _albumListRow(String albumName, List<FileSystemEntity> songs, LibColors c, int index) {
+    final title = stripTrailingYear(TitleCleaner.title(albumName), yearShownElsewhere: _albumYear(songs) != null);
+    final meta = _albumMeta(songs);
+    final px = (60 * MediaQuery.devicePixelRatioOf(context)).round();
+    return StaggerIn(
+      playKey: 'albums:$albumName',
+      index: index,
+      child: Semantics(
+        button: true,
+        label: 'Album $title, $meta',
+        excludeSemantics: true,
+        onTap: () => _openAlbum(albumName, songs),
+        child: PressScale(
+          passive: true,
+          child: InkWell(
+            onTap: () => _openAlbum(albumName, songs),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 76),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    LibCover(
+                        bytes: _albumCover(songs),
+                        seed: albumName,
+                        size: 60,
+                        radius: 14,
+                        cacheSize: px,
+                        icon: Icons.album_rounded),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: c.text, fontSize: 16, fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 3),
+                          Text(meta,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: c.sub, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.chevron_right_rounded, color: c.sub),
+                  ],
+                ),
+              ),
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
-  Widget _empty(bool isDark) {
-    return Center(
-      child: Text(
-        "No Albums Found",
-        style: TextStyle(color: isDark ? Colors.white : Colors.black),
+  Widget _body(LibColors c, Map<String, List<FileSystemEntity>> map) {
+    if (!_metaLoaded) return LibSkeleton(grid: _grid, colors: c);
+    if (map.isEmpty) {
+      return LibEmptyState(
+        icon: _query.isEmpty ? Icons.album_rounded : Icons.search_off_rounded,
+        title: _query.isEmpty ? 'No albums found' : 'No matches',
+        message: _query.isEmpty ? 'Add some music and your albums will show up here.' : 'Nothing matches "$_query".',
+        colors: c,
+      );
+    }
+    final entries = map.entries.toList(growable: false);
+    final songTotal = entries.fold<int>(0, (s, e) => s + e.value.length);
+    final header = SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+        child: Text(
+          '${entries.length} ${entries.length == 1 ? 'album' : 'albums'} · $songTotal songs',
+          style: TextStyle(color: c.sub, fontSize: 13, fontWeight: FontWeight.w500),
+        ),
       ),
     );
+    return LayoutBuilder(builder: (context, cons) {
+      final tileW = (cons.maxWidth - 32 - 16) / 2;
+      return CustomScrollView(
+        key: PageStorageKey<String>('albums-${_grid ? 'g' : 'l'}'),
+        slivers: [
+          header,
+          if (_grid)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              sliver: SliverGrid(
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 18,
+                  crossAxisSpacing: 16,
+                  mainAxisExtent: tileW + 74,
+                ),
+                delegate: SliverChildBuilderDelegate(
+                  (context, i) => _albumGridTile(entries[i].key, entries[i].value, c, tileW, i),
+                  childCount: entries.length,
+                ),
+              ),
+            )
+          else
+            SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, i) => _albumListRow(entries[i].key, entries[i].value, c, i),
+                childCount: entries.length,
+              ),
+            ),
+          const SliverPadding(padding: EdgeInsets.only(bottom: 12)),
+        ],
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final map = _displayByAlbum ?? {};
-    final isDark = widget.isDarkMode;
-
-    final bgColor = isDark ? AppPalette.darkBackground : Colors.white;
-    final cardColor = isDark ? AppPalette.darkCard : Colors.white;
-    final textColor = isDark ? Colors.white : Colors.black;
-    final subColor = isDark ? Colors.grey.shade400 : Colors.grey.shade700;
+    final c = LibColors.of(context);
 
     return Scaffold(
-      backgroundColor: bgColor,
-      appBar: AppBar(
-        backgroundColor: bgColor,
-        elevation: 0,
-        centerTitle: false,
-        title: Text(
-          "Albums",
-          style: TextStyle(
-            color: textColor,
-            fontSize: 28,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
+      backgroundColor: c.bg,
+      appBar: AppPageBar(
+        title: 'Albums',
+        backgroundColor: c.bg,
+        foregroundColor: c.text,
         actions: [
+          ViewToggleButton(
+            grid: _grid,
+            color: c.text,
+            onPressed: () {
+              setState(() => _grid = !_grid);
+              LibViewPref.saveGrid(_kViewPref, _grid);
+            },
+          ),
           IconButton(
-            icon: Icon(
-              _searchActive ? Icons.close : Icons.search,
-              color: textColor,
-              size: 28,
-            ),
+            tooltip: _searchActive ? 'Close search' : 'Search albums',
+            icon: Icon(_searchActive ? Icons.close_rounded : Icons.search_rounded, color: c.text),
             onPressed: _toggleSearch,
-          )
+          ),
         ],
       ),
-      // FIX: Wrapped GlobalMiniPlayer in a Column with MainAxisSize.min
       bottomNavigationBar: const Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -531,51 +675,15 @@ class _AlbumsPageState extends State<AlbumsPage> {
       ),
       body: Column(
         children: [
-          if (_searchActive)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: TextField(
-                controller: _searchController,
-                autofocus: true,
-                decoration: InputDecoration(
-                  hintText: "Search albums...",
-                  hintStyle: TextStyle(color: subColor),
-                  filled: true,
-                  fillColor: isDark ? const Color(0xFF2C2C2C) : Colors.grey.shade100,
-                  prefixIcon: Icon(Icons.search, color: subColor),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-                style: TextStyle(color: textColor),
-              ),
-            ),
-          Expanded(
-            child: map.isEmpty
-                ? _empty(isDark)
-                : ListView.separated(
-              padding: const EdgeInsets.only(top: 10, bottom: 16),
-              itemCount: map.length,
-              separatorBuilder: (ctx, i) => Divider(
-                color: isDark ? Colors.white10 : Colors.grey.shade200,
-                height: 1,
-                indent: 82,
-              ),
-              itemBuilder: (context, index) {
-                final albumName = map.keys.elementAt(index);
-                final songs = map[albumName] ?? [];
-                return _albumListTile(
-                  albumName,
-                  songs,
-                  isDark,
-                  textColor,
-                  subColor,
-                  cardColor,
-                );
-              },
-            ),
+          AnimatedSize(
+            duration: Motion.of(context, Motion.fast),
+            curve: Motion.standard,
+            alignment: Alignment.topCenter,
+            child: _searchActive
+                ? LibSearchField(controller: _searchController, hint: 'Search albums', colors: c)
+                : const SizedBox(width: double.infinity),
           ),
+          Expanded(child: _body(c, map)),
           const BannerAdWidget2(),
         ],
       ),
@@ -618,21 +726,12 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
     }
   }
 
-  /// Open the full-screen player for this album.
-  /// Uses the GLOBAL AudioPlayer to isolate playback to this specific album
-  Future<void> _openFullScreenForAlbum({required int startIndex}) async {
-    final albumFiles = widget.songs.map((fs) => File(fs.path)).toList();
-
-    final metaMap = <String, dynamic>{};
-    for (final f in widget.songs) {
-      final m = widget.metadataCache[f.path];
-      metaMap[f.path] = {
-        'title': m?.title,
-        'artist': m?.artist,
-        'album': m?.album,
-        'cover': m?.coverArt,
-      };
-    }
+  /// Plays [files] (default: the album in order) from [startIndex] using the
+  /// GLOBAL AudioPlayer, so playback is isolated to this album.
+  Future<void> _openFullScreenForAlbum({required int startIndex, List<FileSystemEntity>? files}) async {
+    final list = files ?? widget.songs;
+    if (list.isEmpty || startIndex < 0 || startIndex >= list.length) return;
+    final albumFiles = list.map((fs) => File(fs.path)).toList();
 
     try {
       final paths = albumFiles.map((f) => f.path).toList();
@@ -658,7 +757,6 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
 
         await player.setAudioSource(playlistSource, initialIndex: startIndex);
         await player.play();
-
       } else {
         await _markRecentlyPlayed(albumFiles[startIndex].path);
         widget.onPlay(albumFiles[startIndex].path, startIndex);
@@ -668,32 +766,40 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
     }
   }
 
+  Future<void> _shuffleAlbum() async {
+    if (widget.songs.isEmpty) return;
+    final shuffled = List<FileSystemEntity>.of(widget.songs)..shuffle(Random());
+    HapticFeedback.selectionClick();
+    await _openFullScreenForAlbum(startIndex: 0, files: shuffled);
+  }
+
+  static const double _heroHeight = 330;
+
   @override
   Widget build(BuildContext context) {
-    final bgColor = widget.isDarkMode ? Colors.black : Colors.white;
-    final textColor = widget.isDarkMode ? Colors.white : Colors.black;
-    final subColor = widget.isDarkMode ? Colors.grey.shade400 : Colors.grey.shade600;
-    final primaryColor = AppPalette.accent;
+    final c = LibColors.of(context);
 
-    final firstMeta =
-    widget.songs.isNotEmpty ? widget.metadataCache[widget.songs.first.path] : null;
-    final artist = firstMeta?.artist ?? "Unknown Artist";
-    final coverArt = firstMeta?.coverArt;
+    final firstMeta = widget.songs.isNotEmpty ? widget.metadataCache[widget.songs.first.path] : null;
+    final artist = TitleCleaner.artistOrUnknown(firstMeta?.artist);
+    Uint8List? cover;
+    int? year;
+    var total = Duration.zero;
+    for (final s in widget.songs) {
+      final m = widget.metadataCache[s.path];
+      if (cover == null && m?.coverArt != null && m!.coverArt!.isNotEmpty) cover = m.coverArt;
+      if (year == null && m?.year != null && m!.year! > 0) year = m.year;
+      total += m?.duration ?? Duration.zero;
+    }
+    final cleanAlbum = stripTrailingYear(TitleCleaner.title(widget.albumName), yearShownElsewhere: year != null);
+    final n = widget.songs.length;
+    final meta = [
+      if (year != null) '$year',
+      '$n ${n == 1 ? 'song' : 'songs'}',
+      if (total.inSeconds > 0) formatDuration(total, words: true),
+    ].join(' · ');
 
     return Scaffold(
-      backgroundColor: bgColor,
-      appBar: AppBar(
-        // AppBar color matches the Settings page AppBar (SettingsColors.appBarBackground).
-        backgroundColor: widget.isDarkMode ? AppPalette.darkBackground : Colors.white,
-        elevation: 0,
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: textColor),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Text(artist, style: TextStyle(color: textColor, fontSize: 16)),
-        centerTitle: true,
-      ),
-      // FIX: Wrapped GlobalMiniPlayer in a Column with MainAxisSize.min
+      backgroundColor: c.bg,
       bottomNavigationBar: const Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -701,158 +807,219 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
           BannerAdWidget(),
         ],
       ),
-      body: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 140,
-                    height: 140,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      color: widget.isDarkMode ? Colors.grey.shade800 : Colors.grey.shade200,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.2),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
-                        )
-                      ],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: coverArt != null
-                          ? Image.memory(coverArt, fit: BoxFit.cover)
-                          : Icon(
-                        Icons.album,
-                        size: 60,
-                        color: widget.isDarkMode ? Colors.grey.shade600 : Colors.grey.shade400,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 20),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.albumName,
-                          style: TextStyle(
-                            color: textColor,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          artist,
-                          style: TextStyle(color: subColor, fontSize: 16),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          "${widget.songs.length} songs",
-                          style: TextStyle(color: subColor, fontSize: 14),
-                        ),
-                        const SizedBox(height: 16),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 0),
-              child: Row(
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: () async {
-                      if (widget.songs.isNotEmpty) {
-                        await _openFullScreenForAlbum(startIndex: 0);
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF2D3047),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    ),
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text("Play all"),
-                  ),
-                  const Spacer(),
-                ],
-              ),
-            ),
-          ),
-          const SliverPadding(padding: EdgeInsets.only(top: 10)),
-          SliverList(
-            delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                final song = widget.songs[index];
-                final meta = widget.metadataCache[song.path];
-                final songTitle = meta?.title ?? p.basenameWithoutExtension(song.path);
-                final songSubtitle = meta?.artist ?? "Unknown Artist";
-
-                return ValueListenableBuilder<String?>(
-                  valueListenable: PlaylistContext.currentPathNotifier,
-                  builder: (context, contextPath, _) {
-                    return StreamBuilder<SequenceState?>(
-                      stream: widget.audioPlayer?.sequenceStateStream,
-                      builder: (context, snapshot) {
-                        String? playingPath;
-
-                        if (snapshot.hasData) {
-                          final tag = snapshot.data?.currentSource?.tag;
-                          if (tag is Map) {
-                            playingPath = tag['filePath'] as String?;
-                          }
-                        }
-                        playingPath ??= contextPath;
-
-                        final isPlaying = playingPath != null && playingPath == song.path;
-
-                        return ListTile(
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 0),
-                          title: Text(
-                            songTitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: isPlaying ? primaryColor : textColor,
-                              fontWeight: isPlaying ? FontWeight.bold : FontWeight.w500,
+      body: ArtTint(
+        bytes: cover,
+        builder: (context, base) {
+          final accent = base != null ? ArtColors.accent(base, dark: c.dark, fallback: c.accent) : c.accent;
+          final cc = LibColors.of(context);
+          return Stack(
+            children: [
+              HeroGradient(base: base, colors: cc, height: 560),
+              CustomScrollView(
+                slivers: [
+                  SliverAppBar(
+                    pinned: true,
+                    expandedHeight: _heroHeight,
+                    backgroundColor: Colors.transparent,
+                    surfaceTintColor: Colors.transparent,
+                    shadowColor: Colors.transparent,
+                    elevation: 0,
+                    scrolledUnderElevation: 0,
+                    foregroundColor: c.text,
+                    actions: [
+                      if (widget.songs.isNotEmpty)
+                        QueueMenuButton(paths: widget.songs.map((s) => s.path).toList(), color: c.text),
+                    ],
+                    flexibleSpace: LayoutBuilder(builder: (context, cons) {
+                      final top = MediaQuery.paddingOf(context).top;
+                      final maxH = _heroHeight + top;
+                      final minH = kToolbarHeight + top;
+                      final t = ((cons.maxHeight - minH) / (maxH - minH)).clamp(0.0, 1.0);
+                      final px = (240 * MediaQuery.devicePixelRatioOf(context)).round();
+                      return Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          ColoredBox(color: c.bg.withValues(alpha: (1 - t) * (1 - t))),
+                          Padding(
+                            padding: EdgeInsets.only(top: top + kToolbarHeight, bottom: 12),
+                            child: Center(
+                              child: Opacity(
+                                opacity: t,
+                                child: Transform.scale(
+                                  scale: 0.8 + 0.2 * t,
+                                  child: Semantics(
+                                    label: 'Album art',
+                                    image: true,
+                                    child: LibCover(
+                                      bytes: cover,
+                                      seed: widget.albumName,
+                                      size: 240,
+                                      radius: 22,
+                                      cacheSize: px,
+                                      shadow: true,
+                                      icon: Icons.album_rounded,
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
-                          subtitle: Text(
-                            songSubtitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: subColor, fontSize: 13),
+                          Positioned(
+                            left: 64,
+                            right: 64,
+                            top: top,
+                            height: kToolbarHeight,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Opacity(
+                                opacity: ((0.35 - t) / 0.35).clamp(0.0, 1.0),
+                                child: Text(cleanAlbum,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(color: c.text, fontSize: 18, fontWeight: FontWeight.w700)),
+                              ),
+                            ),
                           ),
-                          onTap: () async {
-                            await _markRecentlyPlayed(song.path);
-                            await _openFullScreenForAlbum(startIndex: index);
-                          },
-                        );
-                      },
-                    );
+                        ],
+                      );
+                    }),
+                  ),
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(cleanAlbum,
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  color: c.text, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5, height: 1.1)),
+                          const SizedBox(height: 6),
+                          Text(artist,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: accent, fontSize: 16, fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 4),
+                          Text(meta, style: TextStyle(color: c.sub, fontSize: 13.5)),
+                          const SizedBox(height: 18),
+                          PlayShuffleRow(
+                            colors: cc,
+                            onPlay: widget.songs.isEmpty ? null : () => _openFullScreenForAlbum(startIndex: 0),
+                            onShuffle: widget.songs.isEmpty ? null : _shuffleAlbum,
+                          ),
+                          const SizedBox(height: 10),
+                        ],
+                      ),
+                    ),
+                  ),
+                  SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) => _trackRow(context, c, accent, artist, index),
+                      childCount: widget.songs.length,
+                    ),
+                  ),
+                  const SliverPadding(padding: EdgeInsets.only(bottom: 16)),
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _trackRow(BuildContext context, LibColors c, Color accent, String albumArtist, int index) {
+    final song = widget.songs[index];
+    final meta = widget.metadataCache[song.path];
+    final songTitle = TitleCleaner.title(meta?.title, path: song.path);
+    final songArtist = TitleCleaner.artistOrUnknown(meta?.artist);
+    final showArtist = songArtist != albumArtist;
+    final dur = meta?.duration;
+
+    return StaggerIn(
+      playKey: 'albumdetail:${song.path}',
+      index: index,
+      child: ValueListenableBuilder<String?>(
+        valueListenable: PlaylistContext.currentPathNotifier,
+        builder: (context, contextPath, _) {
+          return StreamBuilder<SequenceState?>(
+            stream: widget.audioPlayer?.sequenceStateStream,
+            builder: (context, snapshot) {
+              String? playingPath;
+              if (snapshot.hasData) {
+                final tag = snapshot.data?.currentSource?.tag;
+                if (tag is Map) playingPath = tag['filePath'] as String?;
+              }
+              playingPath ??= contextPath;
+              final isPlaying = playingPath != null && playingPath == song.path;
+
+              return Semantics(
+                button: true,
+                selected: isPlaying,
+                label: '${index + 1}. $songTitle${showArtist ? ', $songArtist' : ''}'
+                    '${dur != null ? ', ${formatDuration(dur)}' : ''}${isPlaying ? ', now playing' : ''}',
+                excludeSemantics: true,
+                onTap: () => _openFullScreenForAlbum(startIndex: index),
+                child: InkWell(
+                  onTap: () async {
+                    HapticFeedback.selectionClick();
+                    await _markRecentlyPlayed(song.path);
+                    await _openFullScreenForAlbum(startIndex: index);
                   },
-                );
-              },
-              childCount: widget.songs.length,
-            ),
-          ),
-          const SliverPadding(padding: EdgeInsets.only(bottom: 16)),
-        ],
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 60),
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 20, right: 4, top: 6, bottom: 6),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 32,
+                            child: isPlaying
+                                ? Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: EqualizerBars(color: accent, playing: true, size: 18))
+                                : Text('${index + 1}',
+                                    style: TextStyle(color: c.sub, fontSize: 14, fontWeight: FontWeight.w600)),
+                          ),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(songTitle,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: isPlaying ? accent : c.text,
+                                      fontSize: 16,
+                                      fontWeight: isPlaying ? FontWeight.w700 : FontWeight.w500,
+                                    )),
+                                if (showArtist) ...[
+                                  const SizedBox(height: 2),
+                                  Text(songArtist,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(color: c.sub, fontSize: 13)),
+                                ],
+                              ],
+                            ),
+                          ),
+                          if (dur != null)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 8),
+                              child: Text(formatDuration(dur), style: TextStyle(color: c.sub, fontSize: 13)),
+                            ),
+                          QueueMenuButton(paths: [song.path], color: c.sub),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          );
+        },
       ),
     );
   }

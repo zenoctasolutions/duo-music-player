@@ -7,7 +7,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:path/path.dart' as p;
 
 import 'audio_analysis_service.dart';
 import 'smart_mix_service.dart';
@@ -15,6 +14,9 @@ import 'app_palette.dart';
 import 'ad_widgets.dart';
 import 'player_screen.dart' show PlaylistContext;
 import 'songs_page.dart' show GlobalMiniPlayer;
+import 'library/title_cleaner.dart';
+import 'library/library_motion.dart';
+import 'motion/motion_kit.dart';
 
 Color get _kPrimary => AppPalette.accent;
 
@@ -97,12 +99,12 @@ class _SmartMixPageState extends State<SmartMixPage> {
     widget.onPlay({'paths': paths, 'startIndex': index});
   }
 
-  String _titleFor(String path) => p.basenameWithoutExtension(path);
+  String _titleFor(String path) => TitleCleaner.title(null, path: path);
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? const Color(0xFF0B0B0B) : const Color(0xFFF8F9FD);
+    final bg = isDark ? AppPalette.darkBackground : const Color(0xFFF8F9FD);
     final appBarColor = isDark ? AppPalette.darkBackground : Colors.white;
     final cardColor = isDark ? AppPalette.darkCard : Colors.white;
     final iconColor = isDark ? Colors.white : Colors.black;
@@ -134,26 +136,44 @@ class _SmartMixPageState extends State<SmartMixPage> {
       body: SafeArea(
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('Pick a mood', style: TextStyle(color: primaryText, fontWeight: FontWeight.w700, fontSize: 16)),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: MoodBucket.values.map((mood) {
-                  final selected = mood == _selectedMood;
-                  return ChoiceChip(
-                    label: Text(mood.label),
-                    selected: selected,
-                    onSelected: _generating ? null : (_) => setState(() => _selectedMood = mood),
-                    selectedColor: _kPrimary,
-                    backgroundColor: cardColor,
-                    labelStyle: TextStyle(color: selected ? Colors.white : primaryText),
-                  );
-                }).toList(),
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(22),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    Icon(Icons.mood_rounded, color: _kPrimary, size: 20),
+                    const SizedBox(width: 8),
+                    Text('Pick a mood', style: TextStyle(color: primaryText, fontWeight: FontWeight.w800, fontSize: 17)),
+                  ]),
+                  const SizedBox(height: 4),
+                  Text('Songs are ranked by tempo and energy.', style: TextStyle(color: secondaryText, fontSize: 12.5)),
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: MoodBucket.values.map((mood) {
+                      final selected = mood == _selectedMood;
+                      return ChoiceChip(
+                        label: Text(mood.label),
+                        selected: selected,
+                        showCheckmark: false,
+                        materialTapTargetSize: MaterialTapTargetSize.padded,
+                        onSelected: _generating ? null : (_) => setState(() => _selectedMood = mood),
+                        selectedColor: _kPrimary,
+                        backgroundColor: isDark ? Colors.white.withOpacity(0.06) : const Color(0xFFF1F2F8),
+                        side: BorderSide.none,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                        labelStyle: TextStyle(color: selected ? Colors.white : primaryText, fontWeight: FontWeight.w600),
+                      );
+                    }).toList(),
+                  ),
+                ],
               ),
             ),
             Padding(
@@ -164,7 +184,7 @@ class _SmartMixPageState extends State<SmartMixPage> {
                       ? null
                       : AppPalette.gradient,
                   color: _generating ? Colors.grey.withOpacity(0.4) : null,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(26),
                 ),
                 child: SizedBox(
                   width: double.infinity,
@@ -172,7 +192,8 @@ class _SmartMixPageState extends State<SmartMixPage> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.transparent,
                       shadowColor: Colors.transparent,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
                     ),
                     icon: _generating
                         ? const SizedBox(
@@ -210,11 +231,20 @@ class _SmartMixPageState extends State<SmartMixPage> {
                   ? Center(
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 40),
-                        child: Text(
-                          'Pick a mood and tap Generate Mix to build a playlist from your library based on tempo and energy.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: secondaryText),
-                        ),
+                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          Container(
+                            width: 88,
+                            height: 88,
+                            decoration: BoxDecoration(shape: BoxShape.circle, color: _kPrimary.withOpacity(0.12)),
+                            child: Icon(Icons.auto_awesome_rounded, size: 40, color: _kPrimary),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Pick a mood and tap Generate Mix to build a playlist from your library.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: secondaryText, height: 1.35),
+                          ),
+                        ]),
                       ),
                     )
                   : ValueListenableBuilder<String?>(
@@ -239,21 +269,22 @@ class _SmartMixPageState extends State<SmartMixPage> {
                               final subtitle = isCurrent
                                   ? [playing ? 'Now playing' : 'Paused', if (info.isNotEmpty) info].join(' · ')
                                   : info;
-                              return Container(
+                              return FadeSlideIn(
+                                index: index < 10 ? index : 0,
+                                child: Container(
                                 margin: const EdgeInsets.symmetric(vertical: 2),
                                 decoration: BoxDecoration(
                                   color: isCurrent ? _kPrimary.withOpacity(0.12) : Colors.transparent,
-                                  borderRadius: BorderRadius.circular(12),
+                                  borderRadius: BorderRadius.circular(18),
                                   border: isCurrent ? Border.all(color: _kPrimary.withOpacity(0.6)) : null,
                                 ),
                                 child: ListTile(
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                   leading: CircleAvatar(
                                     backgroundColor: isCurrent ? _kPrimary : _kPrimary.withOpacity(0.12),
-                                    child: Icon(
-                                      isCurrent && playing ? Icons.graphic_eq_rounded : Icons.music_note,
-                                      color: isCurrent ? Colors.white : _kPrimary,
-                                    ),
+                                    child: isCurrent && playing
+                                        ? const EqualizerBars(color: Colors.white, playing: true, size: 18)
+                                        : Icon(Icons.music_note, color: isCurrent ? Colors.white : _kPrimary),
                                   ),
                                   title: Text(
                                     _titleFor(path),
@@ -277,7 +308,7 @@ class _SmartMixPageState extends State<SmartMixPage> {
                                       ? widget.onTogglePlayPause!()
                                       : _playFrom(index),
                                 ),
-                              );
+                              ));
                             },
                           );
                         },

@@ -1,0 +1,365 @@
+{
+  "@@locale": "en",
+  "navLibrary": "Library",
+  "@navLibrary": {
+    "description": "Bottom navigation label"
+  },
+  "navRadio": "Radio",
+  "navDuo": "Duo",
+  "navConverter": "Converter",
+  "navSettings": "Settings",
+  "@navSettings": {
+    "description": "Bottom navigation label; also the Settings page title"
+  },
+  "navTabSemantics": "Tab {index} of {total}",
+  "@navTabSemantics": {
+    "description": "Screen reader hint for bottom navigation tabs",
+    "placeholders": {
+      "index": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "navSelected": "Selected",
+  "tabOverview": "Overview",
+  "tabSongs": "Songs",
+  "tipShuffleOn": "Shuffle: On",
+  "tipShuffleOff": "Shuffle: Off",
+  "tipSortSongs": "Sort songs",
+  "tipRefreshSongs": "Refresh songs",
+  "tipSearchEverywhere": "Search everywhere",
+  "tipSearch": "Search",
+  "tipCloseSearch": "Close search",
+  "searchSongsHint": "Search songs...",
+  "shuffleAll": "Shuffle all",
+  "favorites": "Favorites",
+  "playlists": "Playlists",
+  "newPlaylist": "New playlist",
+  "folders": "Folders",
+  "recentlyAdded": "Recently added",
+  "recentlyPlayed": "Recently played",
+  "mostPlayed": "Most played",
+  "browse": "Browse",
+  "seeAll": "See all",
+  "seeAllSection": "See all {section}",
+  "@seeAllSection": {
+    "description": "Screen reader label for a section's See all button",
+    "placeholders": {
+      "section": {
+        "type": "String"
+      }
+    }
+  },
+  "playSomething": "Play something",
+  "playSomethingSubtitle": "Start with a shuffle of your whole library",
+  "heroNowPlaying": "NOW PLAYING",
+  "heroContinueListening": "CONTINUE LISTENING",
+  "heroPickUp": "PICK UP WHERE YOU LEFT OFF",
+  "heroSemanticsContinue": "Continue listening",
+  "heroSemanticsLast": "Last played",
+  "heroSemanticsBy": "{title} by {artist}",
+  "@heroSemanticsBy": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "artist": {
+        "type": "String"
+      }
+    }
+  },
+  "play": "Play",
+  "pause": "Pause",
+  "songCount": "{count, plural, =1{1 song} other{{count} songs}}",
+  "@songCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "playCount": "{count, plural, =1{1 play} other{{count} plays}}",
+  "@playCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "browseArtists": "Artists",
+  "browseArtistsSub": "Browse by artist",
+  "browseAlbums": "Albums",
+  "browseAlbumsSub": "Browse by album",
+  "browseGenres": "Genres",
+  "browseGenresSub": "Browse by genre",
+  "browseSmartMix": "Smart Mix",
+  "browseSmartMixSub": "Mood and tempo",
+  "noMusicFound": "No music found",
+  "noMusicFoundSub": "Songs on your device will appear here.",
+  "share": "Share",
+  "queue": "Queue",
+  "abLoop": "A-B",
+  "abSet": "A set",
+  "visualizer": "Visualizer",
+  "more": "More",
+  "lyrics": "Lyrics",
+  "cover": "Cover",
+  "playbackSpeed": "Playback Speed",
+  "willPlayNext": "Will play next",
+  "songsWillPlayNext": "{count} songs will play next",
+  "@songsWillPlayNext": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "addedToQueue": "Added to queue",
+  "addedSongsToQueue": "Added {count} songs to queue",
+  "@addedSongsToQueue": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "alreadyInQueue": "Already in queue",
+  "alreadyPlaying": "Already playing",
+  "queueCleared": "Queue cleared",
+  "queueAlreadyEmpty": "Queue already empty",
+  "undo": "Undo",
+  "abLooping": "Looping {a} - {b}",
+  "@abLooping": {
+    "description": "A-B loop activated; a and b are m:ss times",
+    "placeholders": {
+      "a": {
+        "type": "String"
+      },
+      "b": {
+        "type": "String"
+      }
+    }
+  },
+  "abLoopCleared": "A-B loop cleared",
+  "abSetAt": "A set at {time}",
+  "@abSetAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "abTooShort": "B must be at least 1s after A",
+  "searchHint": "Search songs, albums, artists, playlists",
+  "searchClearText": "Clear search text",
+  "searchNothingFound": "Nothing found for \"{query}\"",
+  "@searchNothingFound": {
+    "placeholders": {
+      "query": {
+        "type": "String"
+      }
+    }
+  },
+  "searchNothingFoundHint": "Check the spelling or try a shorter word, an artist or an album name.",
+  "searchLibraryTitle": "Search your whole library",
+  "searchLibraryHint": "Songs, albums, artists and playlists, with or without accents.",
+  "searchRecent": "RECENT SEARCHES",
+  "searchClearAll": "Clear all",
+  "searchRemoveRecent": "Remove \"{query}\" from recent searches",
+  "@searchRemoveRecent": {
+    "placeholders": {
+      "query": {
+        "type": "String"
+      }
+    }
+  },
+  "searchSongs": "SONGS",
+  "searchAlbums": "ALBUMS",
+  "searchArtists": "ARTISTS",
+  "searchPlaylists": "PLAYLISTS",
+  "searchSongSemantics": "Song {title}{by}. Double tap to play.",
+  "@searchSongSemantics": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "by": {
+        "type": "String"
+      }
+    }
+  },
+  "searchBy": " by {artist}",
+  "@searchBy": {
+    "placeholders": {
+      "artist": {
+        "type": "String"
+      }
+    }
+  },
+  "searchAlbumSemantics": "Album {name}, {count, plural, =1{1 song} other{{count} songs}}. Double tap to open.",
+  "@searchAlbumSemantics": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "searchArtistSemantics": "Artist {name}, {count, plural, =1{1 song} other{{count} songs}}. Double tap to open.",
+  "@searchArtistSemantics": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "searchPlaylistSemantics": "Playlist {name}, {count, plural, =1{1 song} other{{count} songs}}. Double tap to open.",
+  "@searchPlaylistSemantics": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "settingsEqualizer": "Equalizer",
+  "settingsEqualizerSub": "Adjust audio bands and apply presets",
+  "settingsSoundEffects": "Sound effects",
+  "settingsSoundEffectsSub": "Bass boost, virtualizer, loudness, volume normalization",
+  "settingsLastfm": "Last.fm",
+  "settingsLastfmSub": "Scrobble your listening history",
+  "settingsMono": "Mono audio (Duo Mode)",
+  "settingsRadio": "Internet Radio",
+  "settingsRadioSub": "Listen to live stations from around the world",
+  "settingsCheckVersion": "Check Latest Version",
+  "settingsCheckVersionSub": "Open Play Store to update the app",
+  "settingsOurApps": "Our Apps",
+  "settingsOurAppsSub": "Discover more apps from Zenocta Solutions",
+  "settingsAppearance": "Appearance",
+  "settingsAppearanceSub": "Accent color, pure black theme, start screen",
+  "settingsLibraryFilters": "Library filters",
+  "settingsLibraryFiltersSub": "Hide short clips and exclude folders",
+  "settingsSleepTimer": "Sleep Timer",
+  "settingsSleepTimerSub": "Stop after a set time or at the end of the song",
+  "settingsAudiobooks": "Audiobooks & long files",
+  "settingsAudiobooksSub": "Remember where you stopped and resume there",
+  "settingsAudioCutter": "Audio Cutter",
+  "settingsAudioCutterSub": "Trim local audio files",
+  "settingsUrlDownloader": "URL Downloader",
+  "settingsUrlDownloaderSub": "Download MP3 audio files via links",
+  "settingsBackup": "Backup & Restore",
+  "settingsBackupSub": "Save or restore playlists, lyrics and favorites",
+  "settingsVersionUnavailable": "Version info not available",
+  "settingsCancel": "Cancel",
+  "settingsVersion": "Version {version}",
+  "@settingsVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "settingsMonoOnSub": "On — both ears get the same mix, so Duo Mode can't split songs. Tap to turn it off in Accessibility.",
+  "settingsMonoOffSub": "Must stay off so each ear gets its own song. Opens Accessibility settings.",
+  "previous": "Previous",
+  "next": "Next",
+  "openPlayer": "Open player",
+  "swipeNextSong": "Next song",
+  "swipePreviousSong": "Previous song",
+  "back": "Back",
+  "close": "Close",
+  "songInfo": "Song info",
+  "nowPlayingTitle": "Now Playing",
+  "cast": "Cast",
+  "lyricsEditLocal": "Add / Edit Local Lyrics",
+  "lyricsOnline": "Online Lyrics",
+  "removeFromQueue": "Remove from queue",
+  "repeatOff": "Repeat Off",
+  "repeatOne": "Repeat One",
+  "abLoopLabel": "A-B loop",
+  "pageDotsLabel": "Art and lyrics pages",
+  "favoriteAdd": "Add to favorites",
+  "favoriteRemove": "Remove from favorites",
+  "nowPlayingState": "now playing",
+  "notPlayingState": "not playing",
+  "seekSlider": "Seek",
+  "mini": "Mini player",
+  "castingTo": "Casting to {device}",
+  "@castingTo": {
+    "placeholders": {
+      "device": {
+        "type": "String"
+      }
+    }
+  },
+  "seekBackBy": "Back {seconds} seconds",
+  "@seekBackBy": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "seekForwardBy": "Forward {seconds} seconds",
+  "@seekForwardBy": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "speedSemantics": "Playback speed {speed}x",
+  "@speedSemantics": {
+    "placeholders": {
+      "speed": {
+        "type": "String"
+      }
+    }
+  },
+  "seekValue": "{position} of {total}",
+  "@seekValue": {
+    "placeholders": {
+      "position": {
+        "type": "String"
+      },
+      "total": {
+        "type": "String"
+      }
+    }
+  },
+  "moreOptionsFor": "More options for {title}",
+  "@moreOptionsFor": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "songRowSemantics": "{title}, {artist}, {state}",
+  "@songRowSemantics": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "artist": {
+        "type": "String"
+      },
+      "state": {
+        "type": "String"
+      }
+    }
+  },
+  "queueOptions": "Queue options",
+  "playNext": "Play next",
+  "addToQueue": "Add to queue"
+}

@@ -8,6 +8,7 @@ import 'app_palette.dart';
 import 'lastfm_service.dart';
 import 'ad_widgets.dart';
 import 'settings_page.dart' show SettingsColors;
+import 'motion/motion_kit.dart';
 
 class LastFmPage extends StatefulWidget {
   final bool isDark;
@@ -56,23 +57,33 @@ class _LastFmPageState extends State<LastFmPage> {
         backgroundColor: c.backgroundColor,
         appBar: AppBar(title: const Text('Last.fm'), backgroundColor: c.appBarBackground, foregroundColor: c.appBarForeground, elevation: 0),
         body: ListView(padding: const EdgeInsets.all(16), children: [
-          Row(children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: const Color(0xFFD51007), borderRadius: BorderRadius.circular(12)),
-              child: const Icon(Icons.graphic_eq_rounded, color: Colors.white),
+          FadeSlideIn(
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(22),
+                gradient: const LinearGradient(colors: [Color(0xFFD51007), Color(0xFFFF5A4D)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+              ),
+              child: Row(children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(14)),
+                  child: const Icon(Icons.graphic_eq_rounded, color: Colors.white),
+                ),
+                const SizedBox(width: 14),
+                const Expanded(
+                  child: Text('Scrobble what you play to your Last.fm profile: track your listening history and get recommendations.',
+                      style: TextStyle(color: Colors.white, fontSize: 13.5, height: 1.35, fontWeight: FontWeight.w500)),
+                ),
+              ]),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text('Scrobble what you play to your Last.fm profile — track your listening history and get recommendations.',
-                  style: TextStyle(color: c.secondaryText, fontSize: 13)),
-            ),
-          ]),
+          ),
           const SizedBox(height: 20),
           if (!fm.isConfigured)
             Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(color: Colors.orange.withOpacity(0.12), borderRadius: BorderRadius.circular(12)),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(color: Colors.orange.withOpacity(0.12), borderRadius: BorderRadius.circular(22)),
               child: Text(
                 'Last.fm scrobbling isn\'t configured in this build yet (the app needs its Last.fm API key). '
                 'It will be available in a future update.',
@@ -81,14 +92,15 @@ class _LastFmPageState extends State<LastFmPage> {
             )
           else if (fm.isSignedIn) ...[
             Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(color: c.cardColor, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.divider)),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(color: c.cardColor, borderRadius: BorderRadius.circular(22), border: Border.all(color: c.divider)),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Row(children: [
                   Icon(Icons.check_circle_rounded, color: accent),
                   const SizedBox(width: 8),
                   Expanded(child: Text('Signed in as ${fm.username}', style: TextStyle(color: c.primaryText, fontWeight: FontWeight.w700))),
                 ]),
+                const SizedBox(height: 8),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   value: fm.enabled,
@@ -113,14 +125,14 @@ class _LastFmPageState extends State<LastFmPage> {
             TextField(
               controller: _user,
               style: TextStyle(color: c.primaryText),
-              decoration: const InputDecoration(labelText: 'Last.fm username', border: OutlineInputBorder()),
+              decoration: InputDecoration(labelText: 'Last.fm username', border: OutlineInputBorder(borderRadius: BorderRadius.circular(22))),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: _pass,
               obscureText: true,
               style: TextStyle(color: c.primaryText),
-              decoration: const InputDecoration(labelText: 'Password', border: OutlineInputBorder()),
+              decoration: InputDecoration(labelText: 'Password', border: OutlineInputBorder(borderRadius: BorderRadius.circular(22))),
               onSubmitted: (_) => _signIn(),
             ),
             if (_error != null) ...[
@@ -129,6 +141,7 @@ class _LastFmPageState extends State<LastFmPage> {
             ],
             const SizedBox(height: 16),
             FilledButton(
+              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26))),
               onPressed: _busy ? null : _signIn,
               child: _busy
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))

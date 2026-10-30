@@ -35,29 +35,45 @@ class MainActivity : FlutterActivity() {
     private val TAG = "MainActivity"
 
     companion object {
-        // Ensure we attach the MethodChannels only once per process
-        private var channelInitialized = false
+        // The engine / activity the MethodChannels are currently registered
+        // for. Channels are re-registered whenever either differs (Back to
+        // launcher + relaunch can create a new activity, and the shared
+        // AudioService engine can be swapped), and only marked as done AFTER
+        // registration completes so a failure is retried on the next call.
+        private var registeredEngine: FlutterEngine? = null
+        private var registeredActivity: java.lang.ref.WeakReference<MainActivity>? = null
+
+        // Effect instances are per audio session, not per activity, so they
+        // live here and survive activity re-creation.
+    // Map sessionId -> Equalizer instance
+        private val eqInstances = ConcurrentHashMap<Int, EqEngine>()
+
+    // Sound effects on the same audio session (bass boost, virtualizer,
+    // loudness). Created lazily; see applySoundEffects.
+        private val bassInstances = ConcurrentHashMap<Int, android.media.audiofx.BassBoost>()
+        private val virtInstances = ConcurrentHashMap<Int, android.media.audiofx.Virtualizer>()
+        private val loudInstances = ConcurrentHashMap<Int, android.media.audiofx.LoudnessEnhancer>()
 
         // Widget button tapped while the process was dead (see
         // WidgetActionActivity); Dart takes it once via takeWidgetAction.
         @Volatile private var pendingWidgetAction: String? = null
     }
 
-    // Map sessionId -> Equalizer instance
-    private val eqInstances = ConcurrentHashMap<Int, EqEngine>()
-
-    // Sound effects on the same audio session (bass boost, virtualizer,
-    // loudness). Created lazily; see applySoundEffects.
-    private val bassInstances = ConcurrentHashMap<Int, android.media.audiofx.BassBoost>()
-    private val virtInstances = ConcurrentHashMap<Int, android.media.audiofx.Virtualizer>()
-    private val loudInstances = ConcurrentHashMap<Int, android.media.audiofx.LoudnessEnhancer>()
-
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         if (savedInstanceState == null) {
             intent?.getStringExtra(WidgetActionActivity.EXTRA_ACTION)?.let { pendingWidgetAction = it }
+            // Launcher shortcut (AppShortcuts.kt): cold-start action.
+            AppShortcuts.handle(this, intent)?.let { pendingWidgetAction = it }
         }
         super.onCreate(savedInstanceState)
+        AppShortcuts.publish(this)
         TagWriteHelper.attach(this)
+    }
+
+    // Launcher shortcut tapped while the activity is already running (singleTop).
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        AppShortcuts.handle(this, intent)?.let { pendingWidgetAction = it }
     }
 
     override fun onResume() {
@@ -76,9 +92,10 @@ class MainActivity : FlutterActivity() {
     override fun provideFlutterEngine(context: Context): FlutterEngine? {
         val engine = AudioServicePlugin.getFlutterEngine(context)
 
-        if (!channelInitialized && engine != null) {
-            channelInitialized = true
-            Log.d(TAG, "Initializing MethodChannels on shared FlutterEngine")
+        val needsRegister = engine != null &&
+            (registeredEngine !== engine || registeredActivity?.get() !== this)
+        if (needsRegister && engine != null) {
+            Log.d(TAG, "Registering MethodChannels (engine changed=${registeredEngine !== engine})")
 
             // CAST CHANNEL — Chromecast discovery / playback (CastHelper.kt)
             CastHelper.register(context.applicationContext, MethodChannel(engine.dartExecutor.binaryMessenger, "music_app/cast"))
@@ -106,6 +123,11 @@ class MainActivity : FlutterActivity() {
                         "takeWidgetAction" -> {
                             result.success(pendingWidgetAction)
                             pendingWidgetAction = null
+                        }
+                        // Launcher shortcut action (AppShortcuts.kt), taken once.
+                        "takeShortcutAction" -> {
+                            result.success(AppShortcuts.pendingShortcut)
+                            AppShortcuts.pendingShortcut = null
                         }
                         else -> result.notImplemented()
                     }
@@ -407,8 +429,10 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
+            registeredEngine = engine
+            registeredActivity = java.lang.ref.WeakReference(this)
         } else {
-            Log.d(TAG, "MethodChannels already initialized or engine is null")
+            Log.d(TAG, "MethodChannels already registered or engine is null")
         }
 
         return engine

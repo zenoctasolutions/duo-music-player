@@ -102,16 +102,16 @@ Future<void> showCastSheet(BuildContext context, {String Function(String path)? 
                     Text(fmt(st.duration), style: TextStyle(color: sub, fontSize: 12)),
                   ]),
                   Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    IconButton(iconSize: 34, icon: Icon(Icons.skip_previous_rounded, color: text), onPressed: cast.previous),
+                    IconButton(tooltip: 'Previous', iconSize: 34, icon: Icon(Icons.skip_previous_rounded, color: text), onPressed: cast.previous),
                     const SizedBox(width: 12),
-                    IconButton.filled(
+                    IconButton.filled(tooltip: st.playing ? 'Pause' : 'Play', 
                       iconSize: 40,
                       style: IconButton.styleFrom(backgroundColor: AppPalette.accent),
                       icon: Icon(st.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, color: Colors.white),
                       onPressed: cast.togglePlay,
                     ),
                     const SizedBox(width: 12),
-                    IconButton(iconSize: 34, icon: Icon(Icons.skip_next_rounded, color: text), onPressed: cast.next),
+                    IconButton(tooltip: 'Next', iconSize: 34, icon: Icon(Icons.skip_next_rounded, color: text), onPressed: cast.next),
                   ]),
                   Row(children: [
                     Icon(Icons.volume_down_rounded, color: sub),

@@ -313,11 +313,11 @@ class _AudioBackgroundPageState extends State<AudioBackgroundPage> {
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    IconButton(
+                    IconButton(tooltip: 'Favorite', 
                       icon: Icon(fav ? Icons.favorite : Icons.favorite_border, color: fav ? Colors.red : _subtitle),
                       onPressed: () => _toggleFavorite(f),
                     ),
-                    IconButton(
+                    IconButton(tooltip: 'Play', 
                       icon: Icon(Icons.play_arrow, color: _subtitle),
                       onPressed: () => _playAt(i),
                     ),
@@ -350,7 +350,7 @@ class _AudioBackgroundPageState extends State<AudioBackgroundPage> {
                 ],
               ),
             ),
-            IconButton(icon: Icon(Icons.skip_previous, color: _subtitle), onPressed: _currentIndex > 0 ? () => _playAt(_currentIndex - 1) : null),
+            IconButton(tooltip: 'Previous', icon: Icon(Icons.skip_previous, color: _subtitle), onPressed: _currentIndex > 0 ? () => _playAt(_currentIndex - 1) : null),
             Container(
               width: 52,
               height: 52,
@@ -358,14 +358,14 @@ class _AudioBackgroundPageState extends State<AudioBackgroundPage> {
                 gradient: LinearGradient(colors: AppPalette.gradientColors),
                 shape: BoxShape.circle,
               ),
-              child: IconButton(
+              child: IconButton(tooltip: _isPlaying ? 'Pause' : 'Play', 
                 icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white),
                 onPressed: () async {
                   if (_isPlaying) await _pause(); else await _resume();
                 },
               ),
             ),
-            IconButton(icon: Icon(Icons.skip_next, color: _subtitle), onPressed: (_currentIndex < _files.length - 1) ? () => _playAt(_currentIndex + 1) : null),
+            IconButton(tooltip: 'Next', icon: Icon(Icons.skip_next, color: _subtitle), onPressed: (_currentIndex < _files.length - 1) ? () => _playAt(_currentIndex + 1) : null),
           ],
         ),
         const SizedBox(height: 6),

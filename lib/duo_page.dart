@@ -5,14 +5,16 @@
 
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path/path.dart' as p;
 
 import 'app_palette.dart';
 import 'duo_service.dart';
+import 'motion/motion_kit.dart';
+import 'ui/app_page_bar.dart';
 
 const Color kDuoLeftColor = Color(0xFF4A90E2);
 const Color kDuoRightColor = Color(0xFFE94E77);
@@ -220,9 +222,10 @@ class _DuoPageState extends State<DuoPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _bg,
-      appBar: AppBar(
+      appBar: AppPageBar(
+        title: 'Duo Mode',
         backgroundColor: _bg,
-        title: Text('Duo Mode', style: TextStyle(color: _text, fontWeight: FontWeight.bold)),
+        foregroundColor: _text,
         actions: [
           IconButton(
             tooltip: 'How it works',
@@ -238,17 +241,17 @@ class _DuoPageState extends State<DuoPage> {
               : ListView(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
                   children: [
-                    _buildHeader(),
-                    if (_state.monoAudio) _buildMonoWarning(),
-                    if (!_notificationsAllowed) _buildNotificationHint(),
+                    FadeSlideIn(index: 0, child: _buildHeader()),
+                    _banner(show: _state.monoAudio, child: _buildMonoWarning()),
+                    _banner(show: !_notificationsAllowed, child: _buildNotificationHint()),
                     const SizedBox(height: 16),
-                    _buildSideCard(DuoSide.left),
+                    FadeSlideIn(index: 1, child: _buildSideCard(DuoSide.left)),
                     const SizedBox(height: 12),
-                    _buildMasterControls(),
+                    FadeSlideIn(index: 2, child: _buildMasterControls()),
                     const SizedBox(height: 12),
-                    _buildSideCard(DuoSide.right),
+                    FadeSlideIn(index: 3, child: _buildSideCard(DuoSide.right)),
                     const SizedBox(height: 16),
-                    _buildMixCard(),
+                    FadeSlideIn(index: 4, child: _buildMixCard()),
                     if (_state.anyLoaded) ...[
                       const SizedBox(height: 8),
                       Center(
@@ -267,6 +270,26 @@ class _DuoPageState extends State<DuoPage> {
     );
   }
 
+  /// Slides/fades a warning banner in and collapses it when it goes away
+  /// (the banner conditions flip as permissions / accessibility change).
+  Widget _banner({required bool show, required Widget child}) {
+    return AnimatedSize(
+      duration: Motion.of(context, Motion.medium),
+      curve: Motion.standard,
+      alignment: Alignment.topCenter,
+      child: AnimatedSwitcher(
+        duration: Motion.of(context, Motion.medium),
+        switchInCurve: Motion.standard,
+        switchOutCurve: Curves.easeIn,
+        transitionBuilder: (c, a) => FadeTransition(
+          opacity: a,
+          child: SlideTransition(position: Tween(begin: const Offset(0, -0.15), end: Offset.zero).animate(a), child: c),
+        ),
+        child: show ? KeyedSubtree(key: const ValueKey('on'), child: child) : const SizedBox(key: ValueKey('off'), width: double.infinity),
+      ),
+    );
+  }
+
   Widget _buildUnsupported() => Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
@@ -277,13 +300,10 @@ class _DuoPageState extends State<DuoPage> {
   Widget _buildHeader() {
     final hp = _state.headphones;
     final connected = hp != null;
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(colors: [kDuoLeftColor, kDuoRightColor], begin: Alignment.topLeft, end: Alignment.bottomRight),
-        borderRadius: BorderRadius.circular(22),
-        boxShadow: [BoxShadow(color: kDuoRightColor.withOpacity(0.25), blurRadius: 18, offset: const Offset(0, 8))],
-      ),
+    return AnimatedGradientHero(
+      colors: const [kDuoLeftColor, kDuoRightColor],
+      glowColor: kDuoRightColor,
+      radius: 24,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           const Icon(Icons.headphones_rounded, color: Colors.white, size: 34),
@@ -297,21 +317,25 @@ class _DuoPageState extends State<DuoPage> {
           ),
         ]),
         const SizedBox(height: 14),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(color: Colors.white.withOpacity(0.18), borderRadius: BorderRadius.circular(30)),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(connected ? Icons.check_circle_rounded : Icons.warning_amber_rounded,
-                color: connected ? Colors.greenAccent : Colors.yellowAccent, size: 18),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                connected ? 'Connected: $hp' : 'No earphones — plug in or connect Bluetooth earbuds',
-                style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w600),
-                maxLines: 2,
+        AnimatedSwitcher(
+          duration: Motion.of(context, Motion.medium),
+          child: Container(
+            key: ValueKey(connected),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(color: Colors.white.withOpacity(0.18), borderRadius: BorderRadius.circular(30)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(connected ? Icons.check_circle_rounded : Icons.warning_amber_rounded,
+                  color: connected ? Colors.greenAccent : Colors.yellowAccent, size: 18),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  connected ? 'Connected: $hp' : 'No earphones — plug in or connect Bluetooth earbuds',
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w600),
+                  maxLines: 2,
+                ),
               ),
-            ),
-          ]),
+            ]),
+          ),
         ),
       ]),
     );
@@ -323,7 +347,7 @@ class _DuoPageState extends State<DuoPage> {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.orange.withOpacity(widget.isDark ? 0.18 : 0.12),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.orange.withOpacity(0.5)),
       ),
       child: Row(children: [
@@ -346,7 +370,7 @@ class _DuoPageState extends State<DuoPage> {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.orange.withOpacity(widget.isDark ? 0.18 : 0.12),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.orange.withOpacity(0.5)),
       ),
       child: Row(children: [
@@ -371,11 +395,13 @@ class _DuoPageState extends State<DuoPage> {
     final total = s.duration.inMilliseconds.toDouble();
     final pos = (_dragSeek[side] ?? s.position.inMilliseconds.toDouble()).clamp(0.0, total <= 0 ? 0.0 : total);
 
-    return Container(
+    return AnimatedContainer(
+      duration: Motion.of(context, Motion.medium),
+      curve: Motion.standard,
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
       decoration: BoxDecoration(
         color: _card,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(22),
         border: Border.all(color: color.withOpacity(s.playing ? 0.8 : 0.25), width: s.playing ? 2 : 1),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(widget.isDark ? 0.25 : 0.05), blurRadius: 12, offset: const Offset(0, 4))],
       ),
@@ -398,7 +424,19 @@ class _DuoPageState extends State<DuoPage> {
         InkWell(
           borderRadius: BorderRadius.circular(14),
           onTap: () => _chooseSong(side),
-          child: Row(children: [
+          // Keyed by the loaded path so changing the song cross-fades.
+          child: AnimatedSwitcher(
+            duration: Motion.of(context, Motion.medium),
+            switchInCurve: Motion.standard,
+            transitionBuilder: (c, a) => FadeTransition(
+              opacity: a,
+              child: SlideTransition(position: Tween(begin: const Offset(0.06, 0), end: Offset.zero).animate(a), child: c),
+            ),
+            layoutBuilder: (current, previous) => Stack(
+              alignment: Alignment.centerLeft,
+              children: [...previous, if (current != null) current],
+            ),
+            child: Row(key: ValueKey(s.path ?? ''), children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: Container(
@@ -431,9 +469,12 @@ class _DuoPageState extends State<DuoPage> {
             const SizedBox(width: 8),
             Icon(Icons.queue_music_rounded, color: color),
           ]),
+          ),
         ),
         if (s.loaded) ...[
-          SliderTheme(
+          Semantics(
+            label: 'Seek',
+            child: SliderTheme(
             data: SliderTheme.of(context).copyWith(
               trackHeight: 3,
               thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
@@ -451,7 +492,7 @@ class _DuoPageState extends State<DuoPage> {
                 _dragSeek[side] = null;
               },
             ),
-          ),
+          )),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(children: [
@@ -477,13 +518,21 @@ class _DuoPageState extends State<DuoPage> {
                 await _refresh();
               },
             ),
-            GestureDetector(
+            Semantics(
+              button: true,
+              excludeSemantics: true,
+              label: s.playing ? 'Pause' : 'Play',
               onTap: () => _toggleSide(side),
-              child: Container(
-                width: 50,
-                height: 50,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-                child: Icon(s.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, color: Colors.white, size: 30),
+              child: PressScale(
+                onTap: () => _toggleSide(side),
+                haptic: true,
+                pressedScale: 0.9,
+                child: Container(
+                  width: 50,
+                  height: 50,
+                  decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                  child: _PlayPauseIcon(playing: s.playing, size: 30),
+                ),
               ),
             ),
             IconButton(
@@ -508,7 +557,7 @@ class _DuoPageState extends State<DuoPage> {
           Row(children: [
             Icon(Icons.volume_down_rounded, color: _sub, size: 20),
             Expanded(
-              child: Slider(
+              child: Semantics(label: 'Volume', child: Slider(
                 value: _duo.volumes[side] ?? 1.0,
                 activeColor: color,
                 inactiveColor: color.withOpacity(0.2),
@@ -516,7 +565,7 @@ class _DuoPageState extends State<DuoPage> {
                   setState(() {});
                   _duo.setVolume(side, v);
                 },
-              ),
+              )),
             ),
             Icon(Icons.volume_up_rounded, color: _sub, size: 20),
           ]),
@@ -529,8 +578,9 @@ class _DuoPageState extends State<DuoPage> {
     final playing = _state.anyPlaying;
     return Row(children: [
       Expanded(
-        child: GestureDetector(
+        child: PressScale(
           onTap: _playBoth,
+          haptic: true,
           child: Container(
             height: 52,
             decoration: BoxDecoration(
@@ -539,10 +589,15 @@ class _DuoPageState extends State<DuoPage> {
               boxShadow: [BoxShadow(color: kDuoLeftColor.withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 4))],
             ),
             child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded, color: Colors.white, size: 28),
+              _PlayPauseIcon(playing: playing, size: 28),
               const SizedBox(width: 6),
-              Text(playing ? 'Pause both' : 'Play both',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+              AnimatedSwitcher(
+                duration: Motion.of(context, Motion.fast),
+                transitionBuilder: (c, a) => FadeTransition(opacity: a, child: c),
+                child: Text(playing ? 'Pause both' : 'Play both',
+                    key: ValueKey(playing),
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+              ),
             ]),
           ),
         ),
@@ -572,20 +627,21 @@ class _DuoPageState extends State<DuoPage> {
   Widget _buildMixCard() {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-      decoration: BoxDecoration(color: _card, borderRadius: BorderRadius.circular(20)),
+      decoration: BoxDecoration(color: _card, borderRadius: BorderRadius.circular(22)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('Balance', style: TextStyle(color: _text, fontWeight: FontWeight.w600)),
         Text('Make one ear quieter without touching the other.', style: TextStyle(color: _sub, fontSize: 12)),
         Row(children: [
           const Text('L', style: TextStyle(color: kDuoLeftColor, fontWeight: FontWeight.w900)),
           Expanded(
-            child: Slider(
+            child: Semantics(label: 'Balance', child: Slider(
               value: _duo.balance,
               min: -1,
               max: 1,
               divisions: 20,
               activeColor: _duo.balance <= 0 ? kDuoLeftColor : kDuoRightColor,
               onChanged: (v) {
+                if (v != _duo.balance) HapticFeedback.selectionClick();
                 setState(() {});
                 _duo.setBalance(v);
               },
@@ -596,7 +652,7 @@ class _DuoPageState extends State<DuoPage> {
                   _duo.setBalance(0);
                 }
               },
-            ),
+            )),
           ),
           const Text('R', style: TextStyle(color: kDuoRightColor, fontWeight: FontWeight.w900)),
         ]),
@@ -753,6 +809,31 @@ class _SongPickerSheetState extends State<_SongPickerSheet> {
                 ),
         ),
       ]),
+    );
+  }
+}
+
+/// Play <-> pause icon that morphs (scale + rotate) instead of swapping.
+class _PlayPauseIcon extends StatelessWidget {
+  final bool playing;
+  final double size;
+  const _PlayPauseIcon({required this.playing, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: Motion.of(context, Motion.fast),
+      switchInCurve: Motion.spring,
+      transitionBuilder: (c, a) => ScaleTransition(
+        scale: a,
+        child: RotationTransition(turns: Tween(begin: 0.85, end: 1.0).animate(a), child: c),
+      ),
+      child: Icon(
+        playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+        key: ValueKey(playing),
+        color: Colors.white,
+        size: size,
+      ),
     );
   }
 }
