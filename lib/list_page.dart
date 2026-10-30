@@ -20,9 +20,15 @@ import 'banner_ad_widget3.dart';
 import 'songs_page.dart' show GlobalMiniPlayer;
 import 'audio_conversion_sheet.dart' show showAudioConversionSheet;
 import 'app_palette.dart';
+import 'ui/app_page_bar.dart';
+import 'library/folders/folder_browser_page.dart';
 import 'library_service.dart';
 import 'queues_sheet.dart';
 import 'favorite_button.dart';
+import 'library/title_cleaner.dart';
+import 'library/library_motion.dart';
+import 'library/overview/overview_home.dart';
+import 'library/queue_menu.dart';
 
 /// Helper to check effective brightness (System or Manual)
 bool isDark(BuildContext context) =>
@@ -323,6 +329,20 @@ class ListPage extends StatefulWidget {
   /// Scaffold/AppBar already provides the surrounding chrome.
   final bool embedded;
 
+  /// Overview "home" hero state (embedded mode only). Supplied by the host
+  /// player; all optional so non-embedded use keeps working.
+  final String? nowPlayingPath;
+  final bool nowPlaying;
+  final double progress;
+  final bool loading;
+  final VoidCallback? onTogglePlay;
+  final VoidCallback? onShuffleAll;
+
+  /// Artist/album already known to the host's metadata cache (Overview hero
+  /// prefers it over lazily reading tags). Both may return null.
+  final String? Function(String path)? resolveArtist;
+  final String? Function(String path)? resolveAlbum;
+
   const ListPage({
     super.key,
     required this.audioFiles,
@@ -333,6 +353,14 @@ class ListPage extends StatefulWidget {
     this.onOpenGenres,
     this.onOpenSmartMix,
     this.embedded = false,
+    this.nowPlayingPath,
+    this.nowPlaying = false,
+    this.progress = 0,
+    this.loading = false,
+    this.onTogglePlay,
+    this.onShuffleAll,
+    this.resolveArtist,
+    this.resolveAlbum,
   });
 
   @override
@@ -686,6 +714,8 @@ class _ListPageState extends State<ListPage> {
         ? Colors.black.withOpacity(0.3)
         : Colors.black.withOpacity(0.06);
 
+    if (widget.embedded) return _buildOverviewHome(folders, artistsMap);
+
     final body = Container(
       color: bgColor,
       child: ListView(
@@ -926,6 +956,185 @@ class _ListPageState extends State<ListPage> {
     );
   }
 
+  Widget _buildOverviewHome(
+      Map<String, List<File>> folders, Map<String, List<File>> artistsMap) {
+    return OverviewHome(
+      files: widget.audioFiles,
+      loading: widget.loading,
+      recentlyPlayed: _recentlyPlayed,
+      nowPlayingPath: widget.nowPlayingPath,
+      isPlaying: widget.nowPlaying,
+      progress: widget.progress,
+      loadCover: _loadCoverForFile,
+      resolveArtist: widget.resolveArtist,
+      resolveAlbum: widget.resolveAlbum,
+      favoritesCount: _favoriteSongs.length,
+      artistsCount: artistsMap.length,
+      hasPlaylists: _hasPlaylists,
+      // Clears the floating mini-player + bottom nav.
+      bottomPadding: 120 + MediaQuery.paddingOf(context).bottom,
+      onPlay: (file, queue, pageId) => _handlePlay(file,
+          pageFiles: queue,
+          indexInPage: queue.indexWhere((f) => f.path == file.path),
+          pageId: pageId),
+      onTogglePlay: () => widget.onTogglePlay?.call(),
+      onShuffleAll: () {
+        final cb = widget.onShuffleAll;
+        if (cb != null) {
+          cb();
+        } else if (widget.audioFiles.isNotEmpty) {
+          _handlePlay(widget.audioFiles[
+              DateTime.now().microsecondsSinceEpoch % widget.audioFiles.length]);
+        }
+      },
+      onOpenRecent: _openRecentlyPlayed,
+      onOpenAdded: () => _openSmartList(SmartListKind.recentlyAdded),
+      onOpenMost: () => _openSmartList(SmartListKind.mostPlayed),
+      onOpenFolders: () => _openFolderList(folders),
+      onOpenFolder: _openFolderSongs,
+      onOpenArtists: _openArtists,
+      onOpenAlbums: () => widget.onOpenAlbums?.call(),
+      onOpenGenres: () => widget.onOpenGenres?.call(),
+      onOpenSmartMix: () => widget.onOpenSmartMix?.call(),
+      onOpenPlaylists: _openPlaylists,
+      onOpenFavorites: _openFavorites,
+    );
+  }
+
+  void _openRecentlyPlayed() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RecentlyPlayedPage(
+          recentlyPlayed: _recentlyPlayed,
+          onPlay: (file) => Future.sync(() => _handlePlay(file,
+              pageFiles: _recentlyPlayed,
+              indexInPage:
+                  _recentlyPlayed.indexWhere((f) => f.path == file.path),
+              pageId: 'recently_played')),
+          onToggleFavorite: (file) => _toggleFavoriteAndShowSnack(context, file),
+          loadCoverForFile: _loadCoverForFile,
+          onPause: (f) => Future.sync(() => _handlePause(f)),
+        ),
+      ),
+    );
+  }
+
+  void _openFolderList(Map<String, List<File>> folders) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => FolderBrowserPage(
+          audioFiles: widget.audioFiles,
+          loading: widget.loading,
+          nowPlayingPath: widget.nowPlayingPath,
+          loadCover: _loadCoverForFile,
+          onPlay: (file, queue, pageId) => _handlePlay(file,
+              pageFiles: queue,
+              indexInPage: queue.indexWhere((f) => f.path == file.path),
+              pageId: pageId),
+        ),
+      ),
+    );
+  }
+
+  void _openFolderSongs(String folderPath, List<File> songs) {
+    final name = p.basename(folderPath).isEmpty ? folderPath : p.basename(folderPath);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => FolderSongsPage(
+          folderName: name,
+          folderPath: folderPath,
+          songs: songs,
+          onPlay: (file) async {
+            final idx = songs.indexWhere((f) => f.path == file.path);
+            await _handlePlay(file,
+                pageFiles: songs, indexInPage: idx, pageId: folderPath);
+          },
+          onToggleFavorite: (f) async => _toggleFavoriteAndShowSnack(context, f),
+          loadCoverForFile: _loadCoverForFile,
+          onPause: (f) => Future.sync(() => _handlePause(f)),
+        ),
+      ),
+    );
+  }
+
+  void _openArtists() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ArtistsPage(
+          audioFiles: widget.audioFiles,
+          onPlay: (path, index) {
+            _handlePlay(File(path),
+                pageFiles: null, indexInPage: 0, pageId: null);
+          },
+          themeNotifier: null,
+        ),
+      ),
+    );
+  }
+
+  void _openFavorites() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MyFavoritesPage(
+          audioFiles: widget.audioFiles,
+          onPlay: (file) => Future.sync(() => _handlePlay(file,
+              pageFiles: _favoriteSongs,
+              indexInPage:
+                  _favoriteSongs.indexWhere((f) => f.path == file.path),
+              pageId: 'favorites')),
+          onToggleFavorite: (file) => _toggleFavoriteAndShowSnack(context, file),
+          loadCoverForFile: _loadCoverForFile,
+          onPause: (f) => Future.sync(() => _handlePause(f)),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openPlaylists() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CreatePlaylistPage(
+          audioFiles: widget.audioFiles,
+          onPlay: (path, playlistPaths) {
+            final file = widget.audioFiles.firstWhere(
+              (f) => f.path == path,
+              orElse: () => File(path),
+            );
+            _handlePlay(
+              file,
+              pageFiles: playlistPaths.map((p) => File(p)).toList(),
+              indexInPage: playlistPaths.indexWhere((p) => p == path),
+              pageId: 'custom_playlist',
+            );
+          },
+          loadCoverForFile: _loadCoverForFile,
+          miniPlayer: const GlobalMiniPlayer(),
+          onNavTap: null,
+          themeController: null,
+          pageId: '',
+        ),
+      ),
+    );
+    await _checkPlaylists();
+    if (!mounted) return;
+    if (result != null && result is Map) {
+      final name = result['name'] ?? 'Playlist';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Playlist "$name" created'),
+          backgroundColor: _primaryColor,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   void _openSmartList(SmartListKind kind) {
     Navigator.push(
       context,
@@ -957,12 +1166,18 @@ class _ListPageState extends State<ListPage> {
     required Color shadowColor,
     required bool dark,
   }) {
-    return Container(
+    return StaggerIn(
+      playKey: 'overview:$title',
+      index: const ['Recently Played', 'Recently Added', 'Most Played', 'Folder List', 'Artists', 'Albums', 'Genres', 'Smart Mix', 'Playlists', 'New Playlist'].indexOf(title).clamp(0, 12),
+      child: Container(
       margin: const EdgeInsets.only(bottom: 8),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: onTap,
+          onTap: () {
+            HapticFeedback.selectionClick();
+            onTap();
+          },
           borderRadius: BorderRadius.circular(16),
           child: Container(
             padding: const EdgeInsets.all(16),
@@ -1016,7 +1231,7 @@ class _ListPageState extends State<ListPage> {
                   width: 36,
                   height: 36,
                   decoration: BoxDecoration(
-                    color: dark ? Colors.grey[800] : Colors.grey[100],
+                    color: dark ? AppPalette.darkCard : Colors.grey[100],
                     shape: BoxShape.circle,
                   ),
                   child: Icon(Icons.arrow_forward_ios,
@@ -1026,6 +1241,7 @@ class _ListPageState extends State<ListPage> {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -1042,7 +1258,10 @@ class _ListPageState extends State<ListPage> {
     required bool dark,
     VoidCallback? onTap,
   }) {
-    return Container(
+    return StaggerIn(
+      playKey: 'overview:$title',
+      index: const ['Recently Played', 'Recently Added', 'Most Played', 'Folder List', 'Artists', 'Albums', 'Genres', 'Smart Mix', 'Playlists', 'New Playlist'].indexOf(title).clamp(0, 12),
+      child: Container(
       margin: const EdgeInsets.only(bottom: 8),
       child: Material(
         color: Colors.transparent,
@@ -1142,7 +1361,7 @@ class _ListPageState extends State<ListPage> {
                   width: 36,
                   height: 36,
                   decoration: BoxDecoration(
-                    color: dark ? Colors.grey[800] : Colors.grey[100],
+                    color: dark ? AppPalette.darkCard : Colors.grey[100],
                     shape: BoxShape.circle,
                   ),
                   child: Icon(Icons.arrow_forward_ios,
@@ -1152,6 +1371,7 @@ class _ListPageState extends State<ListPage> {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -1195,11 +1415,17 @@ class AudioConverterPage extends StatefulWidget {
 
 class _AudioConverterPageState extends State<AudioConverterPage> {
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
   String _query = '';
+  bool _infoExpanded = false;
+
+  /// Artist per file path, filled lazily as rows scroll into view.
+  static final Map<String, String?> _artistCache = {};
 
   @override
   void initState() {
     super.initState();
+    _searchFocus.addListener(() => setState(() {}));
     _searchController.addListener(() {
       setState(() => _query = _searchController.text.trim().toLowerCase());
     });
@@ -1208,6 +1434,7 @@ class _AudioConverterPageState extends State<AudioConverterPage> {
   @override
   void dispose() {
     _searchController.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -1236,12 +1463,14 @@ class _AudioConverterPageState extends State<AudioConverterPage> {
     await showAudioConversionSheet(
       context: context,
       song: file,
+      // Raw file name keeps the output file naming unchanged; the sheet
+      // cleans it for display.
       title: p.basenameWithoutExtension(file.path),
       isDark: dark,
       onConverted: (record) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('${p.basenameWithoutExtension(file.path)} converted'),
+          content: Text('${TitleCleaner.title(null, path: file.path)} converted'),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
         ));
@@ -1249,39 +1478,10 @@ class _AudioConverterPageState extends State<AudioConverterPage> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final dark = isDark(context);
-    final bgColor = dark ? AppPalette.darkBackground : Colors.white;
-    final cardColor = dark ? AppPalette.darkCard : Colors.white;
-    final txtColor = dark ? Colors.white : Colors.black;
-    final subColor = dark ? const Color(0xFFB3B3B3) : Colors.grey.shade700;
-    final primary = AppPalette.accent;
-
-    final files = _query.isEmpty
-        ? widget.audioFiles
-        : widget.audioFiles
-        .where((f) => p.basenameWithoutExtension(f.path).toLowerCase().contains(_query))
-        .toList();
-
-    return Scaffold(
-      backgroundColor: bgColor,
-      appBar: AppBar(
-        title: const Text('Audio Converter'),
-        // AppBar color matches the Settings page AppBar (SettingsColors.appBarBackground).
-        backgroundColor: dark ? AppPalette.darkBackground : Colors.white,
-        elevation: 0,
-        foregroundColor: txtColor,
-        iconTheme: IconThemeData(color: txtColor),
-        systemOverlayStyle: dark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
-      ),
-      // REMOVED: bottomNavigationBar containing GlobalMiniPlayer()
-      // because the parent tab screen already provides it.
-      body: Column(
-        children: [
-          Container(
+  Widget _buildInfoCard(bool dark, Color primary, Color txtColor, Color subColor) {
+    return Container(
             margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: primary.withOpacity(dark ? 0.16 : 0.08),
               borderRadius: BorderRadius.circular(16),
@@ -1290,6 +1490,22 @@ class _AudioConverterPageState extends State<AudioConverterPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                InkWell(
+                  onTap: () => setState(() => _infoExpanded = !_infoExpanded),
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, color: primary, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text('Tips for best 4D / 8D results',
+                            style: TextStyle(fontWeight: FontWeight.w700, color: txtColor, fontSize: 13)),
+                      ),
+                      Icon(_infoExpanded ? Icons.expand_less : Icons.expand_more, color: subColor),
+                    ],
+                  ),
+                ),
+                if (_infoExpanded) ...[
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Icon(Icons.headphones, color: primary),
@@ -1328,13 +1544,52 @@ class _AudioConverterPageState extends State<AudioConverterPage> {
                   'This is informational only — you can still convert any supported file.',
                   style: TextStyle(color: subColor.withOpacity(0.85), fontSize: 12, fontStyle: FontStyle.italic),
                 ),
+                ],
               ],
             ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = isDark(context);
+    final bgColor = dark ? AppPalette.darkBackground : Colors.white;
+    final cardColor = dark ? AppPalette.darkCard : Colors.white;
+    final txtColor = dark ? Colors.white : Colors.black;
+    final subColor = dark ? const Color(0xFFB3B3B3) : Colors.grey.shade700;
+    final primary = AppPalette.accent;
+
+    final files = _query.isEmpty
+        ? widget.audioFiles
+        : widget.audioFiles
+        .where((f) => p.basenameWithoutExtension(f.path).toLowerCase().contains(_query))
+        .toList();
+
+    return Scaffold(
+      backgroundColor: bgColor,
+      appBar: AppPageBar(
+        title: 'Audio Converter',
+        backgroundColor: dark ? AppPalette.darkBackground : Colors.white,
+        foregroundColor: txtColor,
+      ),
+      // REMOVED: bottomNavigationBar containing GlobalMiniPlayer()
+      // because the parent tab screen already provides it.
+      body: Column(
+        children: [
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: _searchFocus.hasFocus
+                ? const SizedBox(width: double.infinity)
+                : _buildInfoCard(dark, primary, txtColor, subColor),
           ),
+          if (_searchFocus.hasFocus) const SizedBox(height: 8),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: TextField(
               controller: _searchController,
+              focusNode: _searchFocus,
               style: TextStyle(color: txtColor),
               decoration: InputDecoration(
                 hintText: 'Search songs to convert...',
@@ -1393,11 +1648,22 @@ class _AudioConverterPageState extends State<AudioConverterPage> {
                             ),
                             const SizedBox(width: 12),
                             Expanded(
-                              child: Text(
-                                p.basenameWithoutExtension(file.path),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(color: txtColor, fontWeight: FontWeight.w500),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    TitleCleaner.title(null, path: file.path),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(color: txtColor, fontWeight: FontWeight.w500),
+                                  ),
+                                  _ConverterArtist(
+                                    key: ValueKey(file.path),
+                                    file: file,
+                                    cache: _artistCache,
+                                    color: subColor,
+                                  ),
+                                ],
                               ),
                             ),
                             Icon(Icons.chevron_right, color: subColor),
@@ -1412,6 +1678,52 @@ class _AudioConverterPageState extends State<AudioConverterPage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Artist subtitle for a converter row — read lazily (only for rows that are
+/// built) and cached so scrolling back doesn't hit the file again.
+class _ConverterArtist extends StatefulWidget {
+  final File file;
+  final Map<String, String?> cache;
+  final Color color;
+
+  const _ConverterArtist({super.key, required this.file, required this.cache, required this.color});
+
+  @override
+  State<_ConverterArtist> createState() => _ConverterArtistState();
+}
+
+class _ConverterArtistState extends State<_ConverterArtist> {
+  String? _artist;
+
+  @override
+  void initState() {
+    super.initState();
+    final path = widget.file.path;
+    if (widget.cache.containsKey(path)) {
+      _artist = widget.cache[path];
+      return;
+    }
+    () async {
+      String? artist;
+      try {
+        final meta = await readMetadata(widget.file, getImage: false);
+        artist = TitleCleaner.artist(meta.artist, albumArtist: null);
+      } catch (_) {}
+      widget.cache[path] = artist;
+      if (mounted && artist != null) setState(() => _artist = artist);
+    }();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final a = _artist;
+    if (a == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Text(a, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: widget.color, fontSize: 12)),
     );
   }
 }
@@ -1578,7 +1890,9 @@ class _CurrentQueuePageState extends State<CurrentQueuePage> {
                   color: isCurrent ? Colors.blue : Colors.grey,
                 ),
                 title: Text(
-                  p.basenameWithoutExtension(file.path),
+                  TitleCleaner.title(null, path: file.path),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: isCurrent ? Colors.blue : null,
                     fontWeight:
@@ -1589,7 +1903,7 @@ class _CurrentQueuePageState extends State<CurrentQueuePage> {
                   'Queue item ${index + 1}',
                   style: const TextStyle(fontSize: 12),
                 ),
-                trailing: IconButton(
+                trailing: IconButton(tooltip: 'Remove from queue', 
                   icon: const Icon(Icons.delete_outline),
                   onPressed: () {
                     setState(() => _currentList.removeAt(index));
@@ -2028,7 +2342,7 @@ class _FolderListPageState extends State<FolderListPage> {
                               width: 36,
                               height: 36,
                               decoration: BoxDecoration(
-                                color: dark ? Colors.grey[800] : Colors.grey[100],
+                                color: dark ? AppPalette.darkCard : Colors.grey[100],
                                 shape: BoxShape.circle,
                               ),
                               child: Icon(
@@ -2474,7 +2788,7 @@ class _BaseListPageState extends State<_BaseListPage> {
           }
         }
         final placeholderColor =
-        isDark(context) ? Colors.grey[800] : Colors.grey[100];
+        isDark(context) ? AppPalette.darkCard : Colors.grey[100];
         final iconColor = isFav ? widget.color : _pageSubtitleColor;
 
         return Container(
@@ -2520,7 +2834,7 @@ class _BaseListPageState extends State<_BaseListPage> {
           : Text(widget.title),
       actions: [
         if (widget.enableSearch)
-          IconButton(
+          IconButton(tooltip: _isSearching ? 'Close search' : 'Search', 
             icon: Icon(_isSearching ? Icons.close : Icons.search),
             onPressed: () {
               setState(() {
@@ -2574,12 +2888,16 @@ class _BaseListPageState extends State<_BaseListPage> {
                 final highlightColor = isCurrent ? widget.color.withOpacity(0.08) : _cardColor;
                 final borderColor = isCurrent ? widget.color : null;
 
-                return Container(
+                return StaggerIn(
+                  playKey: 'base:${widget.title}:${file.path}',
+                  index: index,
+                  child: Container(
                   margin: const EdgeInsets.only(bottom: 8),
                   child: Material(
                     color: Colors.transparent,
                     child: InkWell(
                       onTap: () async {
+                        HapticFeedback.selectionClick();
                         if (isCurrent) {
                           if (isPlaying) {
                             await PlaybackController.instance.pause();
@@ -2627,8 +2945,8 @@ class _BaseListPageState extends State<_BaseListPage> {
                                 CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    p.basenameWithoutExtension(file.path),
-                                    maxLines: 1,
+                                    TitleCleaner.title(null, path: file.path),
+                                    maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       fontWeight: FontWeight.w500,
@@ -2651,6 +2969,11 @@ class _BaseListPageState extends State<_BaseListPage> {
                                 ],
                               ),
                             ),
+                            if (isCurrent)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 4),
+                                child: EqualizerBars(color: widget.color, playing: showPause, size: 18),
+                              ),
                             AnimatedFavoriteButton(
                               isFavorite: isFav,
                               inactiveColor: _pageSubtitleColor,
@@ -2661,16 +2984,17 @@ class _BaseListPageState extends State<_BaseListPage> {
                                 setState(() {});
                               },
                             ),
+                            QueueMenuButton(paths: [file.path], color: widget.color),
                             Container(
-                              width: 36,
-                              height: 36,
+                              width: 48,
+                              height: 48,
                               decoration: BoxDecoration(
                                 color: isDark(context)
                                     ? Colors.grey[800]
                                     : Colors.grey[100],
                                 shape: BoxShape.circle,
                               ),
-                              child: IconButton(
+                              child: IconButton(tooltip: 'Play', 
                                 icon: const Icon(Icons.play_arrow, size: 18),
                                 onPressed: () async {
                                   if (isCurrent) {
@@ -2703,6 +3027,7 @@ class _BaseListPageState extends State<_BaseListPage> {
                       ),
                     ),
                   ),
+                  ),
                 );
               },
             ),
@@ -2731,7 +3056,7 @@ class _EmptyWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = isDark(context);
-    final surfaceColor = dark ? Colors.grey[800]! : Colors.grey[100]!;
+    final surfaceColor = dark ? AppPalette.darkCard : Colors.grey[100]!;
     final primaryTextColor = dark ? Colors.white : Colors.black;
     final secondaryTextColor =
     dark ? Colors.grey.shade700 : const Color(0xFFB3B3B3);

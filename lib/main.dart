@@ -2,14 +2,19 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import     'songs_page.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'constants.dart';
 import 'app_palette.dart';
 import 'library_service.dart';
 import 'app_update_service.dart';
+import 'motion/motion.dart';
+import 'ui/app_theme.dart';
+import 'l10n/gen/app_localizations.dart';
 
 
 class ThemeProvider extends ChangeNotifier {
@@ -124,6 +129,11 @@ Future<void> main() async {
   // All are tiny SharedPreferences reads.
   await Future.wait([AppPalette.load(), SongSort.load(), LibraryFilter.load()]);
 
+  // Screens used to init Hive lazily, which only worked because the Songs
+  // tab happened to load first. Overview is now the default tab and reads
+  // playlists straight away, so Hive must be ready before the first frame.
+  await Hive.initFlutter();
+
   // NOTE: The media notification/MediaSession is owned solely by the
   // AudioService.init() call in songs_page.dart's _NotificationAudioHandler.
   // just_audio_background also calls AudioService.init() internally, so
@@ -164,45 +174,70 @@ class MyApp extends StatelessWidget {
       scaffoldMessengerKey: AppUpdateService.messengerKey,
       title: 'Music Player',
 
+      // Localization scaffold (English template only for now).
+      localizationsDelegates: const [
+        AppLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: AppLocalizations.supportedLocales,
+
       // Use provider's ThemeMode — supports system / light / dark
       themeMode: themeProvider.themeMode,
 
-      // ---------- LIGHT THEME ----------
-      theme: ThemeData(
-        brightness: Brightness.light,
-        scaffoldBackgroundColor: Colors.white,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.white,
-          foregroundColor: Colors.black,
-          elevation: 0,
-          // Material 3 otherwise layers a surface-tint overlay onto the
-          // AppBar once content scrolls underneath it, making the bar look
-          // like it changed color. All AppBars in the app inherit this
-          // theme (none set their own scrolledUnderElevation), so fixing it
-          // here covers every screen without duplicating the property.
-          scrolledUnderElevation: 0,
-        ),
-        colorScheme: ColorScheme.fromSeed(seedColor: AppPalette.accent, brightness: Brightness.light),
-        useMaterial3: true,
-      ),
-
-      // ---------- DARK THEME ----------
-      darkTheme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: AppPalette.darkBackground,
-        appBarTheme: AppBarTheme(
-          backgroundColor: AppPalette.darkBackground,
-          foregroundColor: Colors.white,
-          elevation: 0,
-          scrolledUnderElevation: 0,
-        ),
-        colorScheme: ColorScheme.fromSeed(seedColor: AppPalette.accent, brightness: Brightness.dark)
-            .copyWith(surface: AppPalette.amoled ? Colors.black : null),
-        useMaterial3: true,
-      ),
+      // Built in ui/app_theme.dart: accent colour scheme, shared card/sheet
+      // radii, text hierarchy and the Android page-transition style.
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
 
       // Home: keep your existing screen
-      home: const AudioPlayerScreen(),
+      home: const _LaunchFade(child: AudioPlayerScreen()),
+      ),
+    );
+  }
+}
+
+/// Fades and lifts the first frame in so the app doesn't pop on launch.
+class _LaunchFade extends StatefulWidget {
+  final Widget child;
+  const _LaunchFade({required this.child});
+
+  @override
+  State<_LaunchFade> createState() => _LaunchFadeState();
+}
+
+class _LaunchFadeState extends State<_LaunchFade> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: Motion.slow);
+  late final Animation<double> _t = CurvedAnimation(parent: _c, curve: Motion.standard);
+  bool _started = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    if (Motion.reduced(context)) {
+      _c.value = 1;
+    } else {
+      _c.forward();
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _t,
+      child: AnimatedBuilder(
+        animation: _t,
+        child: widget.child,
+        builder: (context, child) => Transform.translate(offset: Offset(0, (1 - _t.value) * 12), child: child),
       ),
     );
   }

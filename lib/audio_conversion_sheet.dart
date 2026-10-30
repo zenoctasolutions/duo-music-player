@@ -12,6 +12,8 @@ import 'audio_analysis_service.dart';
 import 'audio_conversion_service.dart';
 import 'preset_recommender.dart';
 import 'app_palette.dart';
+import 'motion/motion_kit.dart';
+import 'library/title_cleaner.dart';
 
 Color get _kPrimary => AppPalette.accent;
 
@@ -30,9 +32,16 @@ Future<void> showAudioConversionSheet({
   ConversionRecord? existing8D;
   ConversionType? selfConvertedType;
   try {
-    existing4D = await AudioConversionService.instance.findExisting(song.path, ConversionType.fourD);
-    existing8D = await AudioConversionService.instance.findExisting(song.path, ConversionType.eightD);
-    selfConvertedType = await AudioConversionService.instance.typeOfConvertedFile(song.path);
+    existing4D = await AudioConversionService.instance.findExisting(
+      song.path,
+      ConversionType.fourD,
+    );
+    existing8D = await AudioConversionService.instance.findExisting(
+      song.path,
+      ConversionType.eightD,
+    );
+    selfConvertedType = await AudioConversionService.instance
+        .typeOfConvertedFile(song.path);
   } catch (_) {}
 
   if (!context.mounted) return;
@@ -40,7 +49,9 @@ Future<void> showAudioConversionSheet({
   await showModalBottomSheet(
     context: context,
     backgroundColor: cardBg,
-    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
     builder: (ctx) => SafeArea(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -52,16 +63,26 @@ Future<void> showAudioConversionSheet({
                 Icon(Icons.graphic_eq, color: _kPrimary),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Text('Audio Conversion',
-                      style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: textColor)),
+                  child: Text(
+                    'Audio Conversion',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
+                      color: textColor,
+                    ),
+                  ),
                 ),
               ],
             ),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Text(title,
-                maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: subtitleColor, fontSize: 13)),
+            child: Text(
+              TitleCleaner.title(title, path: song.path),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: subtitleColor, fontSize: 13),
+            ),
           ),
           if (selfConvertedType == null)
             _RecommendationBanner(
@@ -71,34 +92,68 @@ Future<void> showAudioConversionSheet({
               onApply: (preset) {
                 final type = PresetRecommender.toConversionType(preset);
                 Navigator.pop(ctx);
-                final existing = type == ConversionType.fourD ? existing4D : existing8D;
-                _handleConversionTap(context, song, title, type, isDark, onConverted, existing);
+                final existing = type == ConversionType.fourD
+                    ? existing4D
+                    : existing8D;
+                _handleConversionTap(
+                  context,
+                  song,
+                  title,
+                  type,
+                  isDark,
+                  onConverted,
+                  existing,
+                );
               },
             ),
           const SizedBox(height: 8),
-          _ConversionOptionTile(
-            icon: Icons.blur_circular,
-            type: ConversionType.fourD,
-            existing: existing4D,
-            selfConverted: selfConvertedType == ConversionType.fourD,
-            textColor: textColor,
-            subtitleColor: subtitleColor,
-            onTap: () {
-              Navigator.pop(ctx);
-              _handleConversionTap(context, song, title, ConversionType.fourD, isDark, onConverted, existing4D);
-            },
+          FadeSlideIn(
+            index: 1,
+            offset: 12,
+            child: _ConversionOptionTile(
+              icon: Icons.blur_circular,
+              type: ConversionType.fourD,
+              existing: existing4D,
+              selfConverted: selfConvertedType == ConversionType.fourD,
+              textColor: textColor,
+              subtitleColor: subtitleColor,
+              onTap: () {
+                Navigator.pop(ctx);
+                _handleConversionTap(
+                  context,
+                  song,
+                  title,
+                  ConversionType.fourD,
+                  isDark,
+                  onConverted,
+                  existing4D,
+                );
+              },
+            ),
           ),
-          _ConversionOptionTile(
-            icon: Icons.threed_rotation,
-            type: ConversionType.eightD,
-            existing: existing8D,
-            selfConverted: selfConvertedType == ConversionType.eightD,
-            textColor: textColor,
-            subtitleColor: subtitleColor,
-            onTap: () {
-              Navigator.pop(ctx);
-              _handleConversionTap(context, song, title, ConversionType.eightD, isDark, onConverted, existing8D);
-            },
+          FadeSlideIn(
+            index: 2,
+            offset: 12,
+            child: _ConversionOptionTile(
+              icon: Icons.threed_rotation,
+              type: ConversionType.eightD,
+              existing: existing8D,
+              selfConverted: selfConvertedType == ConversionType.eightD,
+              textColor: textColor,
+              subtitleColor: subtitleColor,
+              onTap: () {
+                Navigator.pop(ctx);
+                _handleConversionTap(
+                  context,
+                  song,
+                  title,
+                  ConversionType.eightD,
+                  isDark,
+                  onConverted,
+                  existing8D,
+                );
+              },
+            ),
           ),
           const SizedBox(height: 12),
         ],
@@ -131,12 +186,15 @@ class _RecommendationBannerState extends State<_RecommendationBanner> {
   @override
   void initState() {
     super.initState();
-    AudioAnalysisService.instance.analyze(widget.song.path).then((a) {
-      if (!mounted) return;
-      setState(() => _rec = PresetRecommender.recommend(a));
-    }).catchError((_) {
-      if (mounted) setState(() => _failed = true);
-    });
+    AudioAnalysisService.instance
+        .analyze(widget.song.path)
+        .then((a) {
+          if (!mounted) return;
+          setState(() => _rec = PresetRecommender.recommend(a));
+        })
+        .catchError((_) {
+          if (mounted) setState(() => _failed = true);
+        });
   }
 
   @override
@@ -152,17 +210,25 @@ class _RecommendationBannerState extends State<_RecommendationBanner> {
             SizedBox(
               width: 12,
               height: 12,
-              child: CircularProgressIndicator(strokeWidth: 2, color: _kPrimary),
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: _kPrimary,
+              ),
             ),
             const SizedBox(width: 8),
-            Text('Analyzing track…', style: TextStyle(color: widget.subtitleColor, fontSize: 12)),
+            Text(
+              'Analyzing track…',
+              style: TextStyle(color: widget.subtitleColor, fontSize: 12),
+            ),
           ],
         ),
       );
     }
     if (rec.preset == RecommendedPreset.none) return const SizedBox.shrink();
 
-    final label = rec.preset == RecommendedPreset.eightD ? '8D Audio' : '4D Audio';
+    final label = rec.preset == RecommendedPreset.eightD
+        ? '8D Audio'
+        : '4D Audio';
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
       child: InkWell(
@@ -170,7 +236,10 @@ class _RecommendationBannerState extends State<_RecommendationBanner> {
         onTap: () => widget.onApply(rec.preset),
         child: Container(
           padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(color: _kPrimary.withOpacity(0.08), borderRadius: BorderRadius.circular(12)),
+          decoration: BoxDecoration(
+            color: _kPrimary.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(12),
+          ),
           child: Row(
             children: [
               Icon(Icons.auto_awesome, color: _kPrimary, size: 18),
@@ -179,10 +248,22 @@ class _RecommendationBannerState extends State<_RecommendationBanner> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Recommended: $label',
-                        style: TextStyle(color: widget.textColor, fontWeight: FontWeight.w700, fontSize: 13)),
+                    Text(
+                      'Recommended: $label',
+                      style: TextStyle(
+                        color: widget.textColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
+                    ),
                     const SizedBox(height: 2),
-                    Text(rec.reason, style: TextStyle(color: widget.subtitleColor, fontSize: 11)),
+                    Text(
+                      rec.reason,
+                      style: TextStyle(
+                        color: widget.subtitleColor,
+                        fontSize: 11,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -226,11 +307,20 @@ class _ConversionOptionTile extends StatelessWidget {
         leading: Container(
           width: 44,
           height: 44,
-          decoration: BoxDecoration(color: Colors.grey.withOpacity(0.12), borderRadius: BorderRadius.circular(10)),
+          decoration: BoxDecoration(
+            color: Colors.grey.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
           child: Icon(icon, color: subtitleColor),
         ),
-        title: Text(type.label, style: TextStyle(color: subtitleColor, fontWeight: FontWeight.w600)),
-        subtitle: Text('This file is already ${type.label}', style: TextStyle(color: subtitleColor, fontSize: 12)),
+        title: Text(
+          type.label,
+          style: TextStyle(color: subtitleColor, fontWeight: FontWeight.w600),
+        ),
+        subtitle: Text(
+          'This file is already ${type.label}',
+          style: TextStyle(color: subtitleColor, fontSize: 12),
+        ),
         trailing: Icon(Icons.block, color: subtitleColor),
       );
     }
@@ -238,16 +328,27 @@ class _ConversionOptionTile extends StatelessWidget {
       leading: Container(
         width: 44,
         height: 44,
-        decoration: BoxDecoration(color: _kPrimary.withOpacity(0.12), borderRadius: BorderRadius.circular(10)),
+        decoration: BoxDecoration(
+          color: _kPrimary.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(10),
+        ),
         child: Icon(icon, color: _kPrimary),
       ),
-      title: Text(type.label, style: TextStyle(color: textColor, fontWeight: FontWeight.w600)),
+      title: Text(
+        type.label,
+        style: TextStyle(color: textColor, fontWeight: FontWeight.w600),
+      ),
       subtitle: Text(
         hasExisting ? 'Already converted • Tap to play' : type.description,
-        style: TextStyle(color: hasExisting ? _kPrimary : subtitleColor, fontSize: 12),
+        style: TextStyle(
+          color: hasExisting ? _kPrimary : subtitleColor,
+          fontSize: 12,
+        ),
       ),
-      trailing: Icon(hasExisting ? Icons.play_circle_fill : Icons.chevron_right,
-          color: hasExisting ? _kPrimary : subtitleColor),
+      trailing: Icon(
+        hasExisting ? Icons.play_circle_fill : Icons.chevron_right,
+        color: hasExisting ? _kPrimary : subtitleColor,
+      ),
       onTap: onTap,
     );
   }
@@ -264,12 +365,16 @@ Future<void> _handleConversionTap(
 ) async {
   if (existing != null) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Already converted to ${type.label} — playing existing file'),
-        backgroundColor: _kPrimary,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Already converted to ${type.label} — playing existing file',
+          ),
+          backgroundColor: _kPrimary,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ),
+      );
     }
     onConverted(existing);
     return;
@@ -306,8 +411,10 @@ Future<void> _startConversion(
           builder: (context, value, _) => Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Converting to ${type.label}…',
-                  style: TextStyle(color: textColor, fontWeight: FontWeight.w600)),
+              Text(
+                'Converting to ${type.label}…',
+                style: TextStyle(color: textColor, fontWeight: FontWeight.w600),
+              ),
               const SizedBox(height: 16),
               LinearProgressIndicator(
                 value: value > 0 ? value : null,
@@ -315,7 +422,10 @@ Future<void> _startConversion(
                 backgroundColor: Colors.grey.withOpacity(0.3),
               ),
               const SizedBox(height: 8),
-              Text('${(value * 100).toStringAsFixed(0)}%', style: TextStyle(color: textColor)),
+              Text(
+                '${(value * 100).toStringAsFixed(0)}%',
+                style: TextStyle(color: textColor),
+              ),
               const SizedBox(height: 12),
               TextButton(
                 onPressed: () {
@@ -343,23 +453,30 @@ Future<void> _startConversion(
     );
     closeProgressDialog();
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('${type.suffix} audio saved to Downloads'),
-      backgroundColor: Colors.green,
-      behavior: SnackBarBehavior.floating,
-      duration: const Duration(seconds: 3),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${type.suffix} audio saved to Downloads'),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+      ),
+    );
     onConverted(record);
   } catch (e) {
     closeProgressDialog();
     if (!context.mounted) return;
-    final isCancel = e is ConversionException && e.type == ConversionErrorType.cancelled;
-    final message = e is ConversionException ? e.message : 'Conversion failed: $e';
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(isCancel ? 'Conversion cancelled' : message),
-      backgroundColor: isCancel ? Colors.orange : Colors.red,
-      behavior: SnackBarBehavior.floating,
-      duration: const Duration(seconds: 3),
-    ));
+    final isCancel =
+        e is ConversionException && e.type == ConversionErrorType.cancelled;
+    final message = e is ConversionException
+        ? e.message
+        : 'Conversion failed: $e';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(isCancel ? 'Conversion cancelled' : message),
+        backgroundColor: isCancel ? Colors.orange : Colors.red,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 }

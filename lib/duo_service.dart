@@ -141,9 +141,21 @@ class DuoService with WidgetsBindingObserver {
     try {
       return await _channel.invokeMethod<T>(method, args);
     } on MissingPluginException {
-      // Duo Mode is implemented natively on Android only.
-      _supported = false;
-      return null;
+      // Channel may not be registered yet / was re-created after an engine
+      // swap: retry once before giving up. Only a repeated failure marks Duo
+      // unsupported, and that is re-checked after a minute so one bad moment
+      // doesn't disable it for the whole session.
+      try {
+        await Future.delayed(const Duration(milliseconds: 600));
+        return await _channel.invokeMethod<T>(method, args);
+      } on MissingPluginException {
+        _supported = false;
+        Future.delayed(const Duration(minutes: 1), () => _supported = true);
+        return null;
+      } catch (e) {
+        debugPrint('Duo $method failed: $e');
+        return null;
+      }
     } catch (e) {
       debugPrint('Duo $method failed: $e');
       return null;

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_shuffle_short">Shuffle all</string>
+    <string name="shortcut_shuffle_long">Shuffle all songs</string>
+    <string name="shortcut_search_short">Search</string>
+    <string name="shortcut_search_long">Search your music</string>
+    <string name="shortcut_resume_short">Resume</string>
+    <string name="shortcut_resume_long">Resume playback</string>
+    <string name="qs_tile_label">Duo Music</string>
+</resources>

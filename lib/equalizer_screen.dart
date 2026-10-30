@@ -296,7 +296,8 @@ class _EqualizerScreenState extends State<EqualizerScreen> {
 
   Future<T?> _safeInvoke<T>(String method, [Map<String, dynamic>? args]) async {
     try {
-      final dynamic res = await _eqChannel.invokeMethod(
+      final dynamic res = await invokeChannelRetry<dynamic>(
+        _eqChannel,
         method,
         args ?? {'sessionId': widget.audioSessionId ?? 0},
       );
@@ -1055,7 +1056,7 @@ class _EqualizerScreenState extends State<EqualizerScreen> {
   }
 
   Widget _buildPresetsSection() {
-    final dropdownColor = _isDarkSystem ? const Color(0xFF0F0F0F) : Colors.white;
+    final dropdownColor = _isDarkSystem ? AppPalette.darkCard : Colors.white;
     final dropdownTextColor = _isDarkSystem ? Colors.white : Colors.black;
 
     return Container(
@@ -1114,7 +1115,7 @@ class _EqualizerScreenState extends State<EqualizerScreen> {
                             ),
                           ),
                           if (isCustom)
-                            IconButton(
+                            IconButton(tooltip: 'Delete preset', 
                               icon: const Icon(
                                 Icons.delete,
                                 color: Colors.redAccent,
@@ -1271,19 +1272,43 @@ class _BandSlider extends StatefulWidget {
   State<_BandSlider> createState() => _BandSliderState();
 }
 
-class _BandSliderState extends State<_BandSlider> {
+class _BandSliderState extends State<_BandSlider> with SingleTickerProviderStateMixin {
   late double _val;
+
+  // True while the user drags this band; external value changes (a preset
+  // being applied) glide to the new level instead of jumping.
+  bool _dragging = false;
+  late final AnimationController _glide = AnimationController(vsync: this, duration: const Duration(milliseconds: 380));
+  Animation<double>? _glideAnim;
 
   @override
   void initState() {
     super.initState();
     _val = widget.value;
+    _glide.addListener(() {
+      final a = _glideAnim;
+      if (a != null && mounted) setState(() => _val = a.value);
+    });
+  }
+
+  @override
+  void dispose() {
+    _glide.dispose();
+    super.dispose();
   }
 
   @override
   void didUpdateWidget(covariant _BandSlider oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.value != _val) _val = widget.value;
+    if (widget.value == oldWidget.value || widget.value == _val) return;
+    if (_dragging || (MediaQuery.maybeOf(context)?.disableAnimations ?? false)) {
+      _glide.stop();
+      _val = widget.value;
+      return;
+    }
+    _glideAnim = Tween<double>(begin: _val, end: widget.value)
+        .animate(CurvedAnimation(parent: _glide, curve: Curves.easeOutCubic));
+    _glide.forward(from: 0);
   }
 
   @override
@@ -1352,12 +1377,15 @@ class _BandSliderState extends State<_BandSlider> {
                   max: widget.max,
                   onChanged: enabled
                       ? (v) {
+                    _dragging = true;
+                    _glide.stop();
                     setState(() => _val = v);
                     widget.onChanged(v);
                   }
                       : null,
                   onChangeEnd: enabled
                       ? (v) {
+                    _dragging = false;
                     widget.onChangeEnd(v);
                   }
                       : null,

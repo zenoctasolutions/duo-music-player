@@ -2,16 +2,24 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:music/list_page.dart';
 import 'package:music/player_screen.dart';
 import 'package:path/path.dart' as p;
 import 'ad_widgets.dart';
 import 'songs_page.dart' show GlobalMiniPlayer;
-import 'app_palette.dart';
+import 'library/title_cleaner.dart';
+import 'library/library_motion.dart';
+import 'library/widgets/library_widgets.dart';
+import 'motion/motion_kit.dart';
+import 'player/art_colors.dart';
+import 'ui/app_page_bar.dart';
+import 'library/queue_menu.dart';
 
 // Helper to check system/app theme brightness
 bool isDark(BuildContext context) => Theme.of(context).brightness == Brightness.dark;
@@ -89,9 +97,11 @@ class ArtistsPage extends StatefulWidget {
 }
 
 class _ArtistsPageState extends State<ArtistsPage> {
-  final Color _accentColor = const Color(0xFF1DB954);
-  final Color _primaryColor = AppPalette.accent;
-  final Color _highlightColor = AppPalette.accent;
+  static const String _kViewPref = 'artists_grid_view';
+  bool _grid = true;
+  bool _searchActive = false;
+  String _query = '';
+  final TextEditingController _searchController = TextEditingController();
 
   static const _supportedExtensions = [
     '.mp3',
@@ -116,17 +126,28 @@ class _ArtistsPageState extends State<ArtistsPage> {
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(() {
+      final q = _searchController.text.trim().toLowerCase();
+      if (q != _query && mounted) setState(() => _query = q);
+    });
+    LibViewPref.loadGrid(_kViewPref).then((g) {
+      if (mounted && g != _grid) setState(() => _grid = g);
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadArtistsAndSongs();
     });
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   String _artistFromMetadata(dynamic metadata) {
     try {
-      final artist = metadata?.artist?.toString().trim() ?? '';
-      if (artist.isNotEmpty && artist.toLowerCase() != 'unknown artist') {
-        return artist;
-      }
+      final artist = TitleCleaner.artist(metadata?.artist?.toString());
+      if (artist != null) return artist;
     } catch (_) {}
 
     try {
@@ -142,10 +163,8 @@ class _ArtistsPageState extends State<ArtistsPage> {
       ];
 
       for (final value in alternatives) {
-        final s = value?.toString().trim() ?? '';
-        if (s.isNotEmpty && s.toLowerCase() != 'unknown artist') {
-          return s;
-        }
+        final s = TitleCleaner.artist(value?.toString());
+        if (s != null) return s;
       }
     } catch (_) {}
 
@@ -210,13 +229,13 @@ class _ArtistsPageState extends State<ArtistsPage> {
     try {
       final metadata = await readMetadata(file, getImage: true);
 
-      String title = metadata?.title?.trim() ?? '';
+      String title = TitleCleaner.title(metadata?.title, path: file.path);
       String artist = _artistFromMetadata(metadata);
       String album = metadata?.album?.trim() ?? '';
       final String folderPath = p.dirname(file.path);
 
       if (title.isEmpty) {
-        title = p.basenameWithoutExtension(file.path);
+        title = TitleCleaner.title(null, path: file.path);
       }
 
       // Do not guess artist from filename.
@@ -254,6 +273,9 @@ class _ArtistsPageState extends State<ArtistsPage> {
         filePath: file.path,
         coverArt: coverArt,
         folderPath: folderPath,
+        duration: (metadata?.duration != null && metadata!.duration!.inSeconds > 0)
+            ? formatDuration(metadata.duration!)
+            : null,
       );
 
       _tempSongCache[file.path] = song;
@@ -261,7 +283,7 @@ class _ArtistsPageState extends State<ArtistsPage> {
     } catch (e) {
       debugPrint('Error extracting metadata for ${file.path}: $e');
       final fallback = Song(
-        title: p.basenameWithoutExtension(file.path),
+        title: TitleCleaner.title(null, path: file.path),
         artist: 'Unknown Artist',
         album: p.basename(p.dirname(file.path)),
         filePath: file.path,
@@ -334,177 +356,266 @@ class _ArtistsPageState extends State<ArtistsPage> {
     _loadArtistsAndSongs();
   }
 
+  void _toggleSearch() {
+    setState(() {
+      _searchActive = !_searchActive;
+      if (!_searchActive) {
+        _searchController.clear();
+        _query = '';
+      }
+    });
+  }
+
+  List<Artist> get _filtered {
+    if (_query.isEmpty) return _artists;
+    return _artists.where((a) => a.name.toLowerCase().contains(_query)).toList(growable: false);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final dark = isDark(context);
-    final bgColor = dark ? AppPalette.darkBackground : Colors.white;
-    final cardColor = dark ? AppPalette.darkCard : Colors.white;
-    final txtColor = dark ? Colors.white : Colors.black;
+    final c = LibColors.of(context);
 
     return Scaffold(
-      backgroundColor: bgColor,
-      appBar: AppBar(
-        title: Text(
-          'Artists',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: txtColor,
+      backgroundColor: c.bg,
+      appBar: AppPageBar(
+        title: 'Artists',
+        backgroundColor: c.bg,
+        foregroundColor: c.text,
+        actions: [
+          ViewToggleButton(
+            grid: _grid,
+            color: c.text,
+            onPressed: () {
+              setState(() => _grid = !_grid);
+              LibViewPref.saveGrid(_kViewPref, _grid);
+            },
           ),
-        ),
-        // AppBar color matches the Settings page AppBar (SettingsColors.appBarBackground).
-        backgroundColor: dark ? AppPalette.darkBackground : Colors.white,
-        elevation: 0,
-        iconTheme: IconThemeData(color: txtColor),
+          IconButton(
+            tooltip: _searchActive ? 'Close search' : 'Search artists',
+            icon: Icon(_searchActive ? Icons.close_rounded : Icons.search_rounded, color: c.text),
+            onPressed: _toggleSearch,
+          ),
+        ],
       ),
-      // FIX: Wrapped GlobalMiniPlayer in a Column with MainAxisSize.min
       bottomNavigationBar: const Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           GlobalMiniPlayer(),
         ],
       ),
-      body: _isLoading
-          ? _buildLoadingIndicator(dark)
-          : _artists.isEmpty
-          ? _buildEmptyState(dark)
-          : _buildArtistsList(dark),
-    );
-  }
-
-  Widget _buildLoadingIndicator(bool dark) {
-    final subColor = dark ? Colors.grey.shade400 : Colors.grey.shade700;
-    final accent = dark ? _primaryColor : _accentColor;
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+      body: Column(
         children: [
-          CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(accent)),
-          const SizedBox(height: 20),
-          Text(_loadingProgress, style: TextStyle(color: subColor, fontSize: 16), textAlign: TextAlign.center),
+          AnimatedSize(
+            duration: Motion.of(context, Motion.fast),
+            curve: Motion.standard,
+            alignment: Alignment.topCenter,
+            child: _searchActive
+                ? LibSearchField(controller: _searchController, hint: 'Search artists', colors: c)
+                : const SizedBox(width: double.infinity),
+          ),
+          Expanded(
+            child: _isLoading
+                ? _buildLoadingIndicator(c)
+                : _loadingProgress.startsWith('Error')
+                    ? LibEmptyState(
+                        icon: Icons.error_outline_rounded,
+                        title: 'Could not load artists',
+                        message: _loadingProgress,
+                        colors: c,
+                        actionLabel: 'Try again',
+                        onAction: _refreshArtists,
+                      )
+                    : _artists.isEmpty
+                        ? LibEmptyState(
+                            icon: Icons.people_outline_rounded,
+                            title: 'No artists found',
+                            message: 'No music files with artist information were found.',
+                            colors: c,
+                            actionLabel: 'Try again',
+                            onAction: _refreshArtists,
+                          )
+                        : _buildArtistsList(c),
+          ),
+          const BannerAdWidget(),
         ],
       ),
     );
   }
 
-  Widget _buildEmptyState(bool dark) {
-    final txtColor = dark ? Colors.white : Colors.black;
-    final subColor = dark ? Colors.grey.shade400 : Colors.grey.shade700;
-    final accent = dark ? _primaryColor : _accentColor;
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.people_outline, size: 80, color: subColor),
-          const SizedBox(height: 20),
-          Text('No Artists Found', style: TextStyle(color: txtColor, fontSize: 22, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 40.0),
-            child: Text(
-              'No music files with artist information were found.',
-              style: TextStyle(color: subColor, fontSize: 16),
-              textAlign: TextAlign.center,
-            ),
-          ),
-          const SizedBox(height: 20),
-          ElevatedButton(
-            onPressed: _refreshArtists,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: accent,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Try Again'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildArtistsList(bool dark) {
-    final subColor = dark ? Colors.grey.shade400 : Colors.grey.shade700;
-
-    return Column(
+  Widget _buildLoadingIndicator(LibColors c) {
+    return Stack(
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          child: Row(
-            children: [
-              Text('${_artists.length} ${_artists.length == 1 ? 'artist' : 'artists'}',
-                  style: TextStyle(color: subColor, fontSize: 14)),
-              const Spacer(),
-              Text('${_artists.fold(0, (sum, artist) => sum + artist.songCount)} songs',
-                  style: TextStyle(color: subColor, fontSize: 14)),
-            ],
+        LibSkeleton(grid: _grid, circle: true, colors: c),
+        Positioned(
+          left: 24,
+          right: 24,
+          bottom: 20,
+          child: Semantics(
+            liveRegion: true,
+            child: Text(_loadingProgress,
+                textAlign: TextAlign.center, style: TextStyle(color: c.sub, fontSize: 13)),
           ),
         ),
-        const Divider(height: 1),
-        Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: _artists.length,
-            itemBuilder: (context, index) {
-              final artist = _artists[index];
-              return _buildArtistCard(artist, dark);
-            },
-          ),
-        ),
-        const BannerAdWidget(),
       ],
     );
   }
 
-  Widget _buildArtistCard(Artist artist, bool dark) {
-    final cardColor = dark ? AppPalette.darkCard : Colors.grey.shade50;
-    final txtColor = dark ? Colors.white : Colors.black;
-    final subColor = dark ? Colors.grey.shade400 : Colors.grey.shade700;
-
-    return Card(
-      color: cardColor,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      elevation: 0,
-      child: ListTile(
-        contentPadding: const EdgeInsets.all(12),
-        leading: Container(
-          width: 60,
-          height: 60,
-          decoration: BoxDecoration(
-            color: dark ? Colors.grey[800] : Colors.grey[300],
-            borderRadius: BorderRadius.circular(8),
-            image: artist.coverImage != null
-                ? DecorationImage(
-              image: MemoryImage(artist.coverImage!),
-              fit: BoxFit.cover,
+  Widget _buildArtistsList(LibColors c) {
+    final list = _filtered;
+    if (list.isEmpty) {
+      return LibEmptyState(
+          icon: Icons.search_off_rounded, title: 'No matches', message: 'No artist matches "$_query".', colors: c);
+    }
+    final songTotal = list.fold<int>(0, (s, a) => s + a.songCount);
+    final header = SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+        child: Text(
+          '${list.length} ${list.length == 1 ? 'artist' : 'artists'} · $songTotal songs',
+          style: TextStyle(color: c.sub, fontSize: 13, fontWeight: FontWeight.w500),
+        ),
+      ),
+    );
+    return LayoutBuilder(builder: (context, cons) {
+      final tileW = (cons.maxWidth - 32 - 16) / 2;
+      return CustomScrollView(
+        key: PageStorageKey<String>('artists-${_grid ? 'g' : 'l'}'),
+        slivers: [
+          header,
+          if (_grid)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              sliver: SliverGrid(
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 18,
+                  crossAxisSpacing: 16,
+                  mainAxisExtent: tileW * 0.9 + 78,
+                ),
+                delegate: SliverChildBuilderDelegate(
+                  (context, i) => _artistGridTile(list[i], c, tileW * 0.9, i),
+                  childCount: list.length,
+                ),
+              ),
             )
-                : null,
-          ),
-          child: artist.coverImage == null
-              ? Center(
-            child: Icon(
-              Icons.person,
-              color: dark ? Colors.white54 : Colors.black54,
-              size: 30,
+          else
+            SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, i) => _artistListRow(list[i], c, i),
+                childCount: list.length,
+              ),
             ),
-          )
-              : null,
-        ),
-        title: Text(
-          artist.name,
-          style: TextStyle(color: txtColor, fontWeight: FontWeight.bold, fontSize: 16),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 4.0),
-          child: Text(
-            '${artist.songCount} songs • ${artist.folderCount} ${artist.folderCount == 1 ? 'folder' : 'folders'}',
-            style: TextStyle(color: subColor, fontSize: 13),
+          const SliverPadding(padding: EdgeInsets.only(bottom: 12)),
+        ],
+      );
+    });
+  }
+
+  String _artistMeta(Artist a) {
+    final al = a.albumCount;
+    return '$al ${al == 1 ? 'album' : 'albums'} · ${a.songCount} ${a.songCount == 1 ? 'song' : 'songs'}';
+  }
+
+  Widget _artistGridTile(Artist artist, LibColors c, double avatar, int index) {
+    final meta = _artistMeta(artist);
+    final px = (avatar * MediaQuery.devicePixelRatioOf(context)).round().clamp(120, 600);
+    return StaggerIn(
+      playKey: 'artists:${artist.name}',
+      index: index,
+      child: Semantics(
+        button: true,
+        label: 'Artist ${artist.name}, $meta',
+        excludeSemantics: true,
+        onTap: () => _navigateToArtistDetail(artist),
+        child: PressScale(
+          onTap: () => _navigateToArtistDetail(artist),
+          pressedScale: 0.96,
+          child: Column(
+            children: [
+              LibCover(
+                bytes: artist.coverImage,
+                seed: artist.name,
+                size: avatar,
+                circle: true,
+                shadow: true,
+                cacheSize: px,
+                initial: artist.name == 'Unknown Artist' ? null : artist.name.trim().characters.first.toUpperCase(),
+                icon: Icons.person_rounded,
+              ),
+              const SizedBox(height: 12),
+              Text(artist.name,
+                  maxLines: 1,
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: c.text, fontSize: 15, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 2),
+              Text(meta,
+                  maxLines: 1,
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: c.sub, fontSize: 12.5)),
+            ],
           ),
         ),
-        trailing: Icon(Icons.chevron_right_rounded, color: subColor, size: 24),
+      ),
+    );
+  }
+
+  Widget _artistListRow(Artist artist, LibColors c, int index) {
+    final meta = _artistMeta(artist);
+    final px = (60 * MediaQuery.devicePixelRatioOf(context)).round();
+    return StaggerIn(
+      playKey: 'artists:${artist.name}',
+      index: index,
+      child: Semantics(
+        button: true,
+        label: 'Artist ${artist.name}, $meta',
+        excludeSemantics: true,
         onTap: () => _navigateToArtistDetail(artist),
+        child: PressScale(
+          passive: true,
+          child: InkWell(
+            onTap: () => _navigateToArtistDetail(artist),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 76),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    LibCover(
+                      bytes: artist.coverImage,
+                      seed: artist.name,
+                      size: 60,
+                      circle: true,
+                      cacheSize: px,
+                      initial: artist.name == 'Unknown Artist' ? null : artist.name.trim().characters.first.toUpperCase(),
+                      icon: Icons.person_rounded,
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(artist.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: c.text, fontSize: 16, fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 3),
+                          Text(meta,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: c.sub, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.chevron_right_rounded, color: c.sub),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -542,40 +653,41 @@ class ArtistDetailPage extends StatefulWidget {
 }
 
 class _ArtistDetailPageState extends State<ArtistDetailPage> {
-  String? _selectedFolder;
-  List<Song> _currentFolderSongs = [];
+  /// Album currently filtering the song list (null = all songs).
+  String? _albumFilter;
+  late final List<Song> _allSongs;
+  late final Map<String, List<Song>> _byAlbum;
 
   String? _currentPath;
   bool _isPlaying = false;
-  int _currentIndexInFolder = -1;
-  late String _pageId;
 
   late final VoidCallback _playbackListener;
   late final VoidCallback _isPlayingListener;
+
+  List<Song> get _songs => _albumFilter == null ? _allSongs : (_byAlbum[_albumFilter] ?? const <Song>[]);
+
+  String get _pageId => _albumFilter == null
+      ? 'artist:${widget.artist.name}'
+      : 'artist:${widget.artist.name}:album:${Uri.encodeComponent(_albumFilter!)}';
 
   @override
   void initState() {
     super.initState();
 
-    if (widget.artist.songsByFolder.isNotEmpty) {
-      _selectedFolder = widget.artist.songsByFolder.keys.first;
-      _currentFolderSongs = widget.artist.songsByFolder[_selectedFolder]!;
-      _pageId = 'artist:${widget.artist.name}:folder:${Uri.encodeComponent(_selectedFolder!)}';
+    _allSongs = widget.artist.allSongs;
+    _byAlbum = <String, List<Song>>{};
+    for (final s in _allSongs) {
+      _byAlbum.putIfAbsent(s.album, () => []).add(s);
     }
 
     _playbackListener = () {
       if (!mounted) return;
-      setState(() {
-        _currentPath = PlaybackState.current.value;
-        _recomputeIndex();
-      });
+      setState(() => _currentPath = PlaybackState.current.value);
     };
 
     _isPlayingListener = () {
       if (!mounted) return;
-      setState(() {
-        _isPlaying = PlaybackState.isPlaying.value;
-      });
+      setState(() => _isPlaying = PlaybackState.isPlaying.value);
     };
 
     try {
@@ -583,12 +695,8 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
       PlaybackState.isPlaying.addListener(_isPlayingListener);
     } catch (_) {}
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _currentPath = PlaybackState.current.value;
-      _isPlaying = PlaybackState.isPlaying.value;
-      _recomputeIndex();
-      setState(() {});
-    });
+    _currentPath = PlaybackState.current.value;
+    _isPlaying = PlaybackState.isPlaying.value;
   }
 
   @override
@@ -600,16 +708,6 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
     super.dispose();
   }
 
-  void _recomputeIndex() {
-    final cur = PlaybackState.current.value;
-    if (cur == null) {
-      _currentIndexInFolder = -1;
-      return;
-    }
-    final idx = _currentFolderSongs.indexWhere((song) => _normalizePath(song.filePath) == _normalizePath(cur));
-    _currentIndexInFolder = idx;
-  }
-
   String _normalizePath(String pth) {
     try {
       return p.normalize(pth).replaceAll('\\', '/').toLowerCase();
@@ -618,48 +716,39 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
     }
   }
 
-  List<String> _currentFolderPaths() {
-    return _currentFolderSongs.map((s) => s.filePath).toList(growable: false);
+  bool _isCurrent(Song s) {
+    final cur = _currentPath;
+    return cur != null && _normalizePath(s.filePath) == _normalizePath(cur);
   }
 
-  void _selectFolder(String folderPath) {
-    setState(() {
-      _selectedFolder = folderPath;
-      _currentFolderSongs = widget.artist.songsByFolder[folderPath]!;
-      _pageId = 'artist:${widget.artist.name}:folder:${Uri.encodeComponent(folderPath)}';
-      _currentIndexInFolder = -1;
-    });
-  }
+  Future<void> _playList(List<Song> list, int index, {String? pageId}) async {
+    if (index < 0 || index >= list.length) return;
 
-  Future<void> _setCurrentPlaylistAndPlay(int index) async {
-    if (index < 0 || index >= _currentFolderSongs.length) return;
-
-    final paths = _currentFolderPaths();
+    final paths = list.map((s) => s.filePath).toList(growable: false);
     final currentPath = paths[index];
+    final id = pageId ?? _pageId;
 
     try {
       try {
-        PlaylistContext.setCurrentPlaylist(paths, pageId: _pageId);
+        PlaylistContext.setCurrentPlaylist(paths, pageId: id);
       } catch (_) {}
 
       await PlaybackController.instance.setPlaylist(
         paths,
         startIndex: index,
         play: true,
-        pageId: _pageId,
+        pageId: id,
       );
 
       try {
         PlaylistContext.setCurrentPath(currentPath);
       } catch (_) {}
 
-      if (mounted) {
-        setState(() {
-          _currentPath = currentPath;
-          _currentIndexInFolder = index;
-          _isPlaying = true;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _currentPath = currentPath;
+        _isPlaying = true;
+      });
 
       widget.onPlay?.call(currentPath, index);
     } catch (e) {
@@ -667,14 +756,24 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
     }
   }
 
-  Future<void> _playAllFromCurrentFolder() async {
-    if (_currentFolderSongs.isEmpty) return;
+  Future<void> _setCurrentPlaylistAndPlay(int index) => _playList(_songs, index);
+
+  Future<void> _playAll() async {
+    if (_songs.isEmpty) return;
     await _setCurrentPlaylistAndPlay(0);
   }
 
+  Future<void> _shuffleAll() async {
+    if (_songs.isEmpty) return;
+    HapticFeedback.selectionClick();
+    final shuffled = List<Song>.of(_songs)..shuffle(Random());
+    await _playList(shuffled, 0, pageId: '$_pageId:shuffle');
+  }
+
   Future<void> _toggleOrPlayIndex(int index) async {
-    final isPlayingHere = (_currentIndexInFolder == index) && _isPlaying;
-    final isSamePath = (_currentIndexInFolder == index);
+    final song = _songs[index];
+    final isSamePath = _isCurrent(song);
+    final isPlayingHere = isSamePath && _isPlaying;
 
     if (isPlayingHere) {
       try {
@@ -685,7 +784,7 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
     } else if (isSamePath && !_isPlaying) {
       try {
         await PlaybackController.instance.resume();
-        widget.onPlay?.call(_currentFolderSongs[index].filePath, index);
+        widget.onPlay?.call(song.filePath, index);
       } catch (e) {
         debugPrint('Resume failed: $e');
       }
@@ -696,28 +795,17 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    final dark = isDark(context);
-    final bgColor = dark ? AppPalette.darkBackground : Colors.grey.shade50;
-    final txtColor = dark ? Colors.white : Colors.black;
-    final cardColor = dark ? AppPalette.darkCard : Colors.white;
-
-    final title = widget.artist.name;
-    final folders = widget.artist.songsByFolder.keys.toList();
+    final c = LibColors.of(context);
+    final artist = widget.artist;
+    final songs = _songs;
+    final albums = _byAlbum.entries.toList(growable: false);
+    final meta = '${albums.length} ${albums.length == 1 ? 'album' : 'albums'} · '
+        '${artist.songCount} ${artist.songCount == 1 ? 'song' : 'songs'}';
+    final initial = artist.name == 'Unknown Artist' ? null : artist.name.trim().characters.first.toUpperCase();
+    final dpr = MediaQuery.devicePixelRatioOf(context);
 
     return Scaffold(
-      backgroundColor: bgColor,
-      appBar: AppBar(
-        // AppBar color matches the Settings page AppBar (SettingsColors.appBarBackground).
-        backgroundColor: dark ? AppPalette.darkBackground : Colors.white,
-        iconTheme: IconThemeData(color: txtColor),
-        title: Text(
-          'Artist Details',
-          style: TextStyle(color: txtColor, fontWeight: FontWeight.bold, fontSize: 18),
-        ),
-        elevation: 0,
-        centerTitle: true,
-      ),
-      // FIX: Wrapped GlobalMiniPlayer in a Column with MainAxisSize.min
+      backgroundColor: c.bg,
       bottomNavigationBar: const Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -725,254 +813,273 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
           BannerAdWidget(),
         ],
       ),
-      body: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            color: cardColor,
-            padding: const EdgeInsets.all(24),
-            child: Row(
-              children: [
-                Container(
-                  width: 100,
-                  height: 100,
-                  decoration: BoxDecoration(
-                    color: dark ? Colors.grey[800] : Colors.grey[300],
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.2),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      )
+      body: ArtTint(
+        bytes: artist.coverImage,
+        builder: (context, base) {
+          final accent = base != null ? ArtColors.accent(base, dark: c.dark, fallback: c.accent) : c.accent;
+          return Stack(
+            children: [
+              HeroGradient(base: base, colors: c, height: 520),
+              CustomScrollView(
+                slivers: [
+                  SliverAppBar(
+                    pinned: true,
+                    backgroundColor: Colors.transparent,
+                    surfaceTintColor: Colors.transparent,
+                    elevation: 0,
+                    scrolledUnderElevation: 0,
+                    foregroundColor: c.text,
+                    title: Text(artist.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: c.text, fontSize: 18, fontWeight: FontWeight.w700)),
+                    actions: [
+                      if (_allSongs.isNotEmpty)
+                        QueueMenuButton(paths: _allSongs.map((s) => s.filePath).toList(), color: c.text),
                     ],
-                    image: widget.artist.coverImage != null
-                        ? DecorationImage(
-                      image: MemoryImage(widget.artist.coverImage!),
-                      fit: BoxFit.cover,
-                    )
-                        : null,
                   ),
-                  child: widget.artist.coverImage == null
-                      ? Icon(Icons.person, color: dark ? Colors.white54 : Colors.black54, size: 50)
-                      : null,
-                ),
-                const SizedBox(width: 24),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(color: txtColor, fontSize: 24, fontWeight: FontWeight.bold),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '${widget.artist.songCount} songs • ${widget.artist.folderCount} ${widget.artist.folderCount == 1 ? 'folder' : 'folders'}',
-                        style: TextStyle(
-                          color: dark ? Colors.white70 : Colors.black54,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      if (_selectedFolder != null && _currentFolderSongs.isNotEmpty)
-                        ElevatedButton.icon(
-                          onPressed: _playAllFromCurrentFolder,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppPalette.accent,
-                            foregroundColor: Colors.white,
-                            elevation: 0,
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                      child: Column(
+                        children: [
+                          Semantics(
+                            image: true,
+                            label: 'Artist image',
+                            child: LibCover(
+                              bytes: artist.coverImage,
+                              seed: artist.name,
+                              size: 168,
+                              circle: true,
+                              shadow: true,
+                              cacheSize: (168 * dpr).round(),
+                              initial: initial,
+                              icon: Icons.person_rounded,
+                            ),
                           ),
-                          icon: const Icon(Icons.play_arrow_rounded, size: 20),
-                          label: const Text('Play All', style: TextStyle(fontWeight: FontWeight.bold)),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          if (folders.length > 1)
-            Container(
-              height: 60,
-              width: double.infinity,
-              color: bgColor,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: folders.length,
-                itemBuilder: (context, index) {
-                  final folderPath = folders[index];
-                  final folderName = p.basename(folderPath);
-                  final isSelected = _selectedFolder == folderPath;
-                  final songCount = widget.artist.songsByFolder[folderPath]!.length;
-
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8, top: 12, bottom: 12),
-                    child: ChoiceChip(
-                      label: Text('$folderName ($songCount)', style: const TextStyle(fontWeight: FontWeight.bold)),
-                      selected: isSelected,
-                      onSelected: (_) => _selectFolder(folderPath),
-                      backgroundColor: dark ? Colors.grey[800] : Colors.grey[300],
-                      selectedColor: AppPalette.accent,
-                      labelStyle: TextStyle(
-                        color: isSelected ? Colors.white : txtColor,
+                          const SizedBox(height: 16),
+                          Text(artist.name,
+                              maxLines: 2,
+                              textAlign: TextAlign.center,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  color: c.text, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5)),
+                          const SizedBox(height: 4),
+                          Text(meta, style: TextStyle(color: c.sub, fontSize: 14)),
+                          const SizedBox(height: 18),
+                          PlayShuffleRow(
+                            colors: c,
+                            onPlay: songs.isEmpty ? null : _playAll,
+                            onShuffle: songs.isEmpty ? null : _shuffleAll,
+                          ),
+                        ],
                       ),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                      side: BorderSide.none,
                     ),
-                  );
-                },
-              ),
-            ),
-
-          if (folders.length <= 1) const SizedBox(height: 16),
-
-          Expanded(
-            child: _selectedFolder == null
-                ? Center(
-              child: Text(
-                'Select a folder',
-                style: TextStyle(color: dark ? Colors.grey.shade700 : Colors.grey.shade400),
-              ),
-            )
-                : _currentFolderSongs.isEmpty
-                ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.music_off, size: 64, color: dark ? Colors.grey.shade700 : Colors.grey.shade400),
-                  const SizedBox(height: 16),
-                  Text(
-                    'No songs in this folder',
-                    style: TextStyle(color: dark ? Colors.grey.shade700 : Colors.grey.shade400, fontSize: 16),
                   ),
+                  if (albums.isNotEmpty) ...[
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+                        child: Text('Albums',
+                            style: TextStyle(color: c.text, fontSize: 20, fontWeight: FontWeight.w800)),
+                      ),
+                    ),
+                    SliverToBoxAdapter(
+                      child: SizedBox(
+                        height: 196,
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          itemCount: albums.length,
+                          itemBuilder: (context, i) => _albumCard(albums[i].key, albums[i].value, c, accent, dpr),
+                        ),
+                      ),
+                    ),
+                  ],
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 18, 12, 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _albumFilter == null ? 'Songs' : TitleCleaner.title(_albumFilter),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: c.text, fontSize: 20, fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                          if (_albumFilter != null)
+                            TextButton(
+                              onPressed: () => setState(() => _albumFilter = null),
+                              style: TextButton.styleFrom(minimumSize: const Size(48, 48), foregroundColor: accent),
+                              child: const Text('Show all'),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (songs.isEmpty)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Center(child: Text('No songs', style: TextStyle(color: c.sub, fontSize: 16))),
+                      ),
+                    )
+                  else
+                    SliverList(
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) {
+                          final song = songs[index];
+                          return StaggerIn(
+                            playKey: 'artistsongs:${song.filePath}',
+                            index: index,
+                            child: _buildSongItem(song, index, c, accent, dpr),
+                          );
+                        },
+                        childCount: songs.length,
+                      ),
+                    ),
+                  const SliverPadding(padding: EdgeInsets.only(bottom: 16)),
                 ],
               ),
-            )
-                : ListView.builder(
-              padding: const EdgeInsets.only(bottom: 12),
-              itemCount: _currentFolderSongs.length,
-              itemBuilder: (context, index) {
-                final song = _currentFolderSongs[index];
-                return _buildSongItem(song, index, dark);
-              },
-            ),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildSongItem(Song song, int index, bool dark) {
-    final isPlayingHere = (_currentIndexInFolder == index) && _isPlaying;
-    final cardColor = dark ? AppPalette.darkCard : Colors.white;
-    final txtColor = dark ? Colors.white : Colors.black;
-    final subColor = dark ? Colors.grey.shade400 : Colors.grey.shade700;
-    final highlight = AppPalette.accent;
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      decoration: BoxDecoration(
-        color: cardColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isPlayingHere ? highlight.withOpacity(0.5) : Colors.transparent,
-          width: 1,
+  Widget _albumCard(String name, List<Song> songs, LibColors c, Color accent, double dpr) {
+    final selected = _albumFilter == name;
+    Uint8List? cover;
+    for (final s in songs) {
+      if (s.coverArt != null && s.coverArt!.isNotEmpty) {
+        cover = s.coverArt;
+        break;
+      }
+    }
+    final title = TitleCleaner.title(name);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: 'Album $title, ${songs.length} songs',
+        excludeSemantics: true,
+        onTap: () => setState(() => _albumFilter = selected ? null : name),
+        child: PressScale(
+          onTap: () => setState(() => _albumFilter = selected ? null : name),
+          pressedScale: 0.96,
+          child: SizedBox(
+            width: 132,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AnimatedContainer(
+                  duration: Motion.of(context, Motion.fast),
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(22),
+                    border: Border.all(color: selected ? accent : Colors.transparent, width: 2),
+                  ),
+                  child: LibCover(
+                    bytes: cover,
+                    seed: name,
+                    size: 120,
+                    radius: 18,
+                    cacheSize: (120 * dpr).round(),
+                    icon: Icons.album_rounded,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 3),
+                  child: Text(title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          color: selected ? accent : c.text, fontSize: 14, fontWeight: FontWeight.w700)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 3),
+                  child: Text('${songs.length} ${songs.length == 1 ? 'song' : 'songs'}',
+                      style: TextStyle(color: c.sub, fontSize: 12.5)),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: () => _setCurrentPlaylistAndPlay(index),
+    );
+  }
+
+  Widget _buildSongItem(Song song, int index, LibColors c, Color accent, double dpr) {
+    final isCurrent = _isCurrent(song);
+    final isPlayingHere = isCurrent && _isPlaying;
+
+    return Semantics(
+      button: true,
+      selected: isCurrent,
+      label: '${index + 1}. ${song.title}, ${song.album}${isPlayingHere ? ', now playing' : ''}',
+      excludeSemantics: true,
+      onTap: () => _setCurrentPlaylistAndPlay(index),
+      child: InkWell(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          _setCurrentPlaylistAndPlay(index);
+        },
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 64),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: const EdgeInsets.only(left: 20, right: 4, top: 6, bottom: 6),
             child: Row(
               children: [
                 SizedBox(
-                  width: 30,
-                  child: Text(
-                    '${index + 1}',
-                    style: TextStyle(
-                      color: isPlayingHere ? highlight : subColor,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  width: 28,
+                  child: isCurrent
+                      ? Align(
+                          alignment: Alignment.centerLeft,
+                          child: EqualizerBars(color: accent, playing: isPlayingHere, size: 18))
+                      : Text('${index + 1}',
+                          style: TextStyle(color: c.sub, fontSize: 14, fontWeight: FontWeight.w600)),
                 ),
-                const SizedBox(width: 8),
-                if (song.coverArt != null && song.coverArt!.isNotEmpty) ...[
-                  Container(
-                    width: 44,
-                    height: 44,
-                    margin: const EdgeInsets.only(right: 14),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      image: DecorationImage(image: MemoryImage(song.coverArt!), fit: BoxFit.cover),
-                    ),
-                  ),
-                ] else ...[
-                  Container(
-                    width: 44,
-                    height: 44,
-                    margin: const EdgeInsets.only(right: 14),
-                    decoration: BoxDecoration(
-                      color: dark ? Colors.grey[800] : Colors.grey[200],
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Icon(Icons.music_note, color: subColor, size: 22),
-                  ),
-                ],
+                LibCover(
+                  bytes: song.coverArt,
+                  seed: song.album,
+                  size: 48,
+                  radius: 10,
+                  cacheSize: (48 * dpr).round(),
+                ),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
+                      Text(song.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: isCurrent ? accent : c.text,
+                            fontSize: 16,
+                            fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                          )),
+                      const SizedBox(height: 2),
                       Text(
-                        song.title,
-                        style: TextStyle(
-                          color: isPlayingHere ? highlight : txtColor,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
+                        song.duration != null ? '${song.album} · ${song.duration}' : song.album,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        song.album,
-                        style: TextStyle(
-                          color: subColor,
-                          fontSize: 13,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: c.sub, fontSize: 13),
                       ),
                     ],
                   ),
                 ),
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: dark ? const Color(0xFF2A2A2A) : Colors.grey[100],
-                    shape: BoxShape.circle,
-                  ),
-                  child: IconButton(
-                    icon: isPlayingHere
-                        ? Icon(Icons.equalizer, size: 18, color: highlight)
-                        : const Icon(Icons.play_arrow_rounded, size: 20),
-                    color: highlight,
-                    onPressed: () => _toggleOrPlayIndex(index),
-                    padding: EdgeInsets.zero,
-                  ),
+                IconButton(
+                  tooltip: isPlayingHere ? 'Pause' : 'Play',
+                  constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                  icon: Icon(isPlayingHere ? Icons.pause_rounded : Icons.play_arrow_rounded, color: accent),
+                  onPressed: () => _toggleOrPlayIndex(index),
                 ),
+                QueueMenuButton(paths: [song.filePath], color: c.sub),
               ],
             ),
           ),

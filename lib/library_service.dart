@@ -31,10 +31,14 @@ class LibraryInfo {
   /// Duration in milliseconds from MediaStore (0 / missing when unknown).
   static final Map<String, int> durationMs = {};
 
+  /// File size in bytes from MediaStore (missing when unknown).
+  static final Map<String, int> sizeBytes = {};
+
   static void ingest(List<MediaStoreAudio> entries) {
     for (final e in entries) {
       if (e.dateAdded > 0) dateAdded[e.path] = e.dateAdded;
       if (e.durationMs > 0) durationMs[e.path] = e.durationMs;
+      if (e.sizeBytes > 0) sizeBytes[e.path] = e.sizeBytes;
     }
   }
 
@@ -113,13 +117,48 @@ class LibraryFilter {
     return false;
   }
 
+  static const _ownPackage = 'com.zenocta.duomusicplayer';
+
+  /// Files shorter than this are never shown (see [allows]).
+  static const _corruptStubMs = 1000;
+
+  /// Always-on, conservative junk check (not user-configurable): audio that
+  /// other apps keep in their private storage or caches (e.g. the system
+  /// sound picker's cache), and URI-like names such as
+  /// `android.resource://...`. Real music is never stored there. This app's
+  /// own `Android/data/<package>/files` output is still allowed.
+  static bool isJunkPath(String path) {
+    final lower = path.replaceAll('\\', '/').toLowerCase();
+    if (lower.contains('android.resource:') || lower.contains('content://') || lower.contains('file://')) {
+      return true;
+    }
+    final m = RegExp(r'/android/(data|obb)/([^/]+)/(.*)$').firstMatch(lower);
+    if (m != null) {
+      final pkg = m.group(2)!;
+      final rest = m.group(3)!;
+      if (pkg != _ownPackage) return true;
+      if (rest.startsWith('cache/')) return true;
+    }
+    // The system sound picker keeps copies of the user's ringtones/alarms
+    // under Android/media; they carry `android.resource://` tags and are not
+    // music.
+    if (lower.contains('/android/media/com.google.android.soundpicker/')) return true;
+    // Cache/thumbnail folders anywhere (e.g. /storage/emulated/0/Music/.../cache/x.mp3).
+    if (lower.contains('/cache/') && lower.contains('/android/')) return true;
+    return false;
+  }
+
   /// Whether [path] should appear in the library. [knownDurationMs] is used
   /// when MediaStore didn't report a duration (e.g. filesystem fallback);
   /// songs of unknown length are never hidden by the duration filter.
   static bool allows(String path, {int? knownDurationMs}) {
+    if (isJunkPath(path)) return false;
     if (isExcludedPath(path)) return false;
+    final ms = LibraryInfo.durationMs[path] ?? knownDurationMs ?? 0;
+    // Sub-second files (e.g. a 183 ms / 1 KB stub) are corrupt or empty, not
+    // music, whatever the user's minimum-length setting is.
+    if (ms > 0 && ms < _corruptStubMs) return false;
     if (_minDurationSec > 0) {
-      final ms = LibraryInfo.durationMs[path] ?? knownDurationMs ?? 0;
       if (ms > 0 && ms < _minDurationSec * 1000) return false;
     }
     return true;

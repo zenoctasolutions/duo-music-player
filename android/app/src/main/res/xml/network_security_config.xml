@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext policy.
+     Radio stations and "download from URL" accept arbitrary user-entered
+     streams, many of which are http:// only. Android cannot scope cleartext
+     to "any user URL", so the base config must permit it. The app's own API
+     hosts are pinned to HTTPS-only below, so a downgrade on those is
+     blocked. Everything else uses the system CA store (no user CAs). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">lrclib.net</domain>
+        <domain includeSubdomains="true">radio-browser.info</domain>
+        <domain includeSubdomains="true">itunes.apple.com</domain>
+        <domain includeSubdomains="true">audioscrobbler.com</domain>
+        <domain includeSubdomains="true">last.fm</domain>
+    </domain-config>
+</network-security-config>

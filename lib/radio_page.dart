@@ -15,7 +15,9 @@ import 'radio_service.dart';
 import 'banner_ad_widget2.dart';
 import 'songs_page.dart' show GlobalMiniPlayer;
 import 'app_palette.dart';
+import 'ui/app_page_bar.dart';
 import 'ad_widgets.dart';
+import 'motion/motion_kit.dart';
 
 Color get _kPrimary => AppPalette.accent;
 
@@ -127,6 +129,105 @@ class _StationArt extends StatelessWidget {
     );
   }
 }
+
+/// Small rounded chip (codec / bitrate).
+class _RadioChip extends StatelessWidget {
+  final String label;
+  final Color color;
+  const _RadioChip(this.label, this.color);
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.14),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(label, style: TextStyle(color: color, fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: 0.3)),
+      );
+}
+
+/// Animated pulsing "LIVE" badge for the active station.
+class _LiveBadge extends StatefulWidget {
+  final bool playing;
+  const _LiveBadge({required this.playing});
+
+  @override
+  State<_LiveBadge> createState() => _LiveBadgeState();
+}
+
+class _LiveBadgeState extends State<_LiveBadge> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LiveBadge old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  void _sync() {
+    final go = widget.playing && !Motion.reduced(context);
+    if (go && !_c.isAnimating) {
+      _c.repeat(reverse: true);
+    } else if (!go && _c.isAnimating) {
+      _c.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      AnimatedBuilder(
+        animation: _c,
+        builder: (_, __) => Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: widget.playing ? Colors.redAccent : Colors.grey,
+            shape: BoxShape.circle,
+            boxShadow: widget.playing
+                ? [BoxShadow(color: Colors.redAccent.withOpacity(0.55 * _c.value), blurRadius: 3 + 6 * _c.value, spreadRadius: 1 * _c.value)]
+                : null,
+          ),
+        ),
+      ),
+      const SizedBox(width: 5),
+      Text(widget.playing ? 'LIVE' : 'PAUSED',
+          style: TextStyle(color: widget.playing ? Colors.redAccent : Colors.grey, fontSize: 10.5, fontWeight: FontWeight.w800, letterSpacing: 0.6)),
+    ]);
+  }
+}
+
+InputDecoration _radioSearchDecoration({
+  required String hint,
+  required Color fill,
+  required Color hintColor,
+  required Color iconColor,
+  Widget? suffix,
+}) =>
+    InputDecoration(
+      hintText: hint,
+      hintStyle: TextStyle(color: hintColor),
+      prefixIcon: Icon(Icons.search_rounded, color: iconColor),
+      suffixIcon: suffix,
+      filled: true,
+      fillColor: fill,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide(color: _kPrimary, width: 1.4)),
+      contentPadding: const EdgeInsets.symmetric(vertical: 14),
+    );
 
 class InternetRadioPage extends StatefulWidget {
   final AudioPlayer audioPlayer;
@@ -281,12 +382,10 @@ class _InternetRadioPageState extends State<InternetRadioPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _bg,
-      appBar: AppBar(
-        // AppBar color matches the Settings page AppBar (SettingsColors.appBarBackground).
+      appBar: AppPageBar(
         backgroundColor: widget.isDark ? AppPalette.darkBackground : Colors.white,
-        elevation: 0,
-        iconTheme: IconThemeData(color: _textColor),
-        title: Text('Internet Radio', style: TextStyle(color: _textColor)),
+        foregroundColor: _textColor,
+        title: 'Internet Radio',
         actions: [
           IconButton(
             icon: Icon(Icons.favorite_border, color: _textColor),
@@ -320,14 +419,18 @@ class _InternetRadioPageState extends State<InternetRadioPage> {
             child: TextField(
               controller: _searchController,
               style: TextStyle(color: _textColor),
-              decoration: InputDecoration(
-                hintText: 'Search countries...',
-                hintStyle: TextStyle(color: _subtitleColor),
-                prefixIcon: Icon(Icons.search, color: _subtitleColor),
-                filled: true,
-                fillColor: _cardColor,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                contentPadding: const EdgeInsets.symmetric(vertical: 0),
+              decoration: _radioSearchDecoration(
+                hint: 'Search countries...',
+                fill: _cardColor,
+                hintColor: _subtitleColor,
+                iconColor: _subtitleColor,
+                suffix: _searchController.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Clear',
+                        icon: Icon(Icons.close_rounded, color: _subtitleColor),
+                        onPressed: _searchController.clear,
+                      ),
               ),
             ),
           ),
@@ -370,39 +473,87 @@ class _InternetRadioPageState extends State<InternetRadioPage> {
       itemBuilder: (context, index) {
         final country = _filtered[index];
         final isPinned = _pinnedCountries.contains(country.countryCode);
-        return Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          child: Material(
-            color: _cardColor,
-            borderRadius: BorderRadius.circular(14),
-            clipBehavior: Clip.antiAlias,
-            child: ListTile(
-              leading: Text(country.flagEmoji, style: const TextStyle(fontSize: 26)),
-              title: Text(country.name, style: TextStyle(color: _textColor, fontWeight: FontWeight.w600)),
-              subtitle: Text('${country.stationCount} stations', style: TextStyle(color: _subtitleColor, fontSize: 12)),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    iconSize: 22,
-                    icon: Icon(
-                      isPinned ? Icons.push_pin : Icons.push_pin_outlined,
-                      color: isPinned ? _kPrimary : _subtitleColor,
-                    ),
-                    onPressed: () => _togglePin(country),
-                    tooltip: isPinned ? 'Unpin' : 'Pin to top',
+        return FadeSlideIn(
+          index: index < 10 ? index : 0,
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            child: PressScale(
+              passive: true,
+              child: Material(
+                color: Colors.transparent,
+                child: Ink(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(22),
+                    color: isPinned ? _kPrimary.withOpacity(widget.isDark ? 0.16 : 0.08) : _cardColor,
+                    border: Border.all(color: isPinned ? _kPrimary.withOpacity(0.55) : Colors.transparent, width: 1.2),
                   ),
-                  Icon(Icons.chevron_right, color: _subtitleColor),
-                ],
-              ),
-              onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => RadioStationsPage(
-                  country: country,
-                  audioPlayer: widget.audioPlayer,
-                  isDark: widget.isDark,
-                  onPlayStation: widget.onPlayStation,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(22),
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => RadioStationsPage(
+                        country: country,
+                        audioPlayer: widget.audioPlayer,
+                        isDark: widget.isDark,
+                        onPlayStation: widget.onPlayStation,
+                      ),
+                    )),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
+                      child: Row(children: [
+                        Container(
+                          width: 60,
+                          height: 60,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: widget.isDark ? Colors.white.withOpacity(0.07) : const Color(0xFFF1F2F8),
+                          ),
+                          child: Text(country.flagEmoji, style: const TextStyle(fontSize: 34)),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text(country.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(color: _textColor, fontWeight: FontWeight.w700, fontSize: 16)),
+                            const SizedBox(height: 4),
+                            Row(children: [
+                              Icon(Icons.radio_rounded, size: 14, color: _kPrimary),
+                              const SizedBox(width: 4),
+                              Flexible(
+                                child: Text(country.stationCountLabel,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(color: _subtitleColor, fontSize: 12.5, fontWeight: FontWeight.w600)),
+                              ),
+                            ]),
+                          ]),
+                        ),
+                        IconButton(
+                          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                          icon: AnimatedSwitcher(
+                            duration: Motion.of(context, Motion.fast),
+                            transitionBuilder: (child, anim) => ScaleTransition(
+                              scale: CurvedAnimation(parent: anim, curve: Motion.spring),
+                              child: RotationTransition(turns: Tween(begin: 0.9, end: 1.0).animate(anim), child: child),
+                            ),
+                            child: Icon(
+                              isPinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                              key: ValueKey(isPinned),
+                              color: isPinned ? _kPrimary : _subtitleColor,
+                            ),
+                          ),
+                          onPressed: () => _togglePin(country),
+                          tooltip: isPinned ? 'Unpin ${country.name}' : 'Pin ${country.name} to top',
+                        ),
+                        Icon(Icons.chevron_right_rounded, color: _subtitleColor),
+                        const SizedBox(width: 6),
+                      ]),
+                    ),
+                  ),
                 ),
-              )),
+              ),
             ),
           ),
         );
@@ -620,14 +771,11 @@ class _RadioStationsPageState extends State<RadioStationsPage> {
                   child: TextField(
                     controller: _searchController,
                     style: TextStyle(color: _textColor),
-                    decoration: InputDecoration(
-                      hintText: 'Search stations...',
-                      hintStyle: TextStyle(color: _subtitleColor),
-                      prefixIcon: Icon(Icons.search, color: _subtitleColor),
-                      filled: true,
-                      fillColor: _cardColor,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                      contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                    decoration: _radioSearchDecoration(
+                      hint: 'Search stations...',
+                      fill: _cardColor,
+                      hintColor: _subtitleColor,
+                      iconColor: _subtitleColor,
                     ),
                   ),
                 ),
@@ -826,12 +974,12 @@ class _StationGridCard extends StatelessWidget {
 
     return Material(
       color: isCurrent ? highlightBg : cardColor,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(22),
       clipBehavior: Clip.antiAlias,
       child: Container(
         decoration: isCurrent
             ? BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(22),
           border: Border.all(color: _kPrimary, width: 1.4),
         )
             : null,
@@ -864,7 +1012,7 @@ class _StationGridCard extends StatelessWidget {
                                 color: Colors.black.withOpacity(0.45),
                                 shape: BoxShape.circle,
                               ),
-                              child: IconButton(
+                              child: IconButton(tooltip: fav ? 'Remove from favorites' : 'Add to favorites', 
                                 iconSize: 12, // Reduced icon size
                                 constraints: const BoxConstraints(minWidth: 20, minHeight: 20), // Reduced circle radius
                                 padding: EdgeInsets.zero,
@@ -968,69 +1116,78 @@ class _StationTile extends StatelessWidget {
       // onto a Material ancestor so ListTile's ink splash stays visible.
       child: Material(
         color: isCurrent ? highlightBg : cardColor,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(22),
         clipBehavior: Clip.antiAlias,
         child: Container(
           decoration: isCurrent
               ? BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(22),
             border: Border.all(color: _kPrimary, width: 1.4),
           )
               : null,
-          child: ListTile(
-            leading: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: SizedBox(width: 44, height: 44, child: _StationArt(url: station.favicon, isDark: isDark)),
-                ),
-                if (isCurrent)
-                  Positioned(
-                    right: -4,
-                    bottom: -4,
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        color: _kPrimary,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: cardColor, width: 1.5),
-                      ),
-                      child: StreamBuilder<PlayerState>(
-                        stream: audioPlayer.playerStateStream,
-                        builder: (context, snap) {
-                          final playing = snap.data?.playing ?? audioPlayer.playing;
-                          return _NowPlayingBars(
-                            active: playing,
-                            color: Colors.white,
-                            barWidth: 2,
-                            maxBarHeight: 10,
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            title: Text(
-              station.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: isCurrent ? _kPrimary : textColor, fontWeight: FontWeight.w600),
-            ),
-            subtitle: Text(station.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: subtitleColor, fontSize: 12)),
-            trailing: AnimatedBuilder(
-              animation: RadioFavoritesNotifier.instance,
-              builder: (context, _) {
-                final fav = RadioFavoritesNotifier.instance.contains(station.stationUuid);
-                return IconButton(
-                  iconSize: 20,
-                  icon: Icon(fav ? Icons.favorite : Icons.favorite_border, color: fav ? Colors.red : subtitleColor),
-                  onPressed: () => RadioFavoritesNotifier.instance.toggle(station),
-                );
-              },
-            ),
+          child: InkWell(
             onTap: onTap,
+            child: Semantics(
+              button: true,
+              label: 'Play ${station.name}',
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 10, 2, 10),
+                child: Row(children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(22),
+                    child: SizedBox(width: 56, height: 56, child: _StationArt(url: station.favicon, isDark: isDark)),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(
+                        station.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: isCurrent ? _kPrimary : textColor, fontWeight: FontWeight.w700, fontSize: 15),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(station.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: subtitleColor, fontSize: 12)),
+                      const SizedBox(height: 5),
+                      Wrap(spacing: 6, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                        if (isCurrent)
+                          StreamBuilder<PlayerState>(
+                            stream: audioPlayer.playerStateStream,
+                            builder: (context, snap) {
+                              final playing = snap.data?.playing ?? audioPlayer.playing;
+                              return Row(mainAxisSize: MainAxisSize.min, children: [
+                                _NowPlayingBars(active: playing, color: _kPrimary, barWidth: 2.5, maxBarHeight: 12),
+                                const SizedBox(width: 8),
+                                _LiveBadge(playing: playing),
+                              ]);
+                            },
+                          ),
+                        if (station.codec.trim().isNotEmpty) _RadioChip(station.codec.toUpperCase(), _kPrimary),
+                        if (station.bitrate > 0) _RadioChip('${station.bitrate} kbps', subtitleColor),
+                      ]),
+                    ]),
+                  ),
+                  AnimatedBuilder(
+                    animation: RadioFavoritesNotifier.instance,
+                    builder: (context, _) {
+                      final fav = RadioFavoritesNotifier.instance.contains(station.stationUuid);
+                      return IconButton(
+                        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                        iconSize: 22,
+                        tooltip: fav ? 'Remove from favorites' : 'Add to favorites',
+                        icon: AnimatedSwitcher(
+                          duration: Motion.of(context, Motion.fast),
+                          transitionBuilder: (c, a) => ScaleTransition(scale: CurvedAnimation(parent: a, curve: Motion.spring), child: c),
+                          child: Icon(fav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                              key: ValueKey(fav), color: fav ? Colors.red : subtitleColor),
+                        ),
+                        onPressed: () => RadioFavoritesNotifier.instance.toggle(station),
+                      );
+                    },
+                  ),
+                ]),
+              ),
+            ),
           ),
         ),
       ),
@@ -1116,7 +1273,7 @@ class RadioMiniPlayer extends StatelessWidget {
                       gradient: AppPalette.gradient,
                       shape: BoxShape.circle,
                     ),
-                    child: IconButton(
+                    child: IconButton(tooltip: playing ? 'Pause' : 'Play', 
                       icon: Icon(playing ? Icons.pause : Icons.play_arrow, color: Colors.white),
                       onPressed: () => playing ? audioPlayer.pause() : audioPlayer.play(),
                     ),
@@ -1185,7 +1342,7 @@ class _RadioFullScreenPlayerState extends State<RadioFullScreenPlayer> {
                 animation: RadioFavoritesNotifier.instance,
                 builder: (context, _) {
                   final fav = RadioFavoritesNotifier.instance.contains(station.stationUuid);
-                  return IconButton(
+                  return IconButton(tooltip: fav ? 'Remove from favorites' : 'Add to favorites', 
                     icon: Icon(fav ? Icons.favorite : Icons.favorite_border, color: fav ? Colors.red : textColor),
                     onPressed: () => RadioFavoritesNotifier.instance.toggle(station),
                   );
@@ -1259,7 +1416,7 @@ class _RadioFullScreenPlayerState extends State<RadioFullScreenPlayer> {
                               height: 28,
                               child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white),
                             )
-                                : IconButton(
+                                : IconButton(tooltip: playing ? 'Pause' : 'Play', 
                               icon: Icon(playing ? Icons.pause : Icons.play_arrow, size: 36, color: Colors.white),
                               onPressed: () => playing ? widget.audioPlayer.pause() : widget.audioPlayer.play(),
                             ),

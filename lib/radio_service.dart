@@ -125,6 +125,15 @@ class RadioCountry {
             : int.tryParse('${json['stationcount']}') ?? 0,
       );
 
+  /// A real, named country: non-blank name and a two-letter ISO code. The
+  /// API returns a few blank / malformed rows that render as an empty title
+  /// with a "?" or UN flag.
+  bool get isValid =>
+      name.trim().isNotEmpty && RegExp(r'^[A-Za-z]{2}$').hasMatch(countryCode.trim());
+
+  /// "1 station" / "N stations".
+  String get stationCountLabel => '$stationCount ${stationCount == 1 ? 'station' : 'stations'}';
+
   /// Regional-indicator flag emoji derived from the ISO country code.
   String get flagEmoji {
     if (countryCode.length != 2) return '\u{1F310}';
@@ -283,7 +292,7 @@ class RadioBrowserService {
         const {'order': 'name'},
         (data) => (data as List)
             .map((e) => RadioCountry.fromJson(Map<String, dynamic>.from(e as Map)))
-            .where((c) => c.stationCount > 0 && c.countryCode.isNotEmpty)
+            .where((c) => c.stationCount > 0 && c.isValid)
             .toList(),
         cacheKey: 'countries',
         ttl: const Duration(days: 1),

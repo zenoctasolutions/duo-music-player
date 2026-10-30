@@ -7,6 +7,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'l10n/l10n.dart';
+
 class AnimatedFavoriteButton extends StatefulWidget {
   final bool isFavorite;
   final VoidCallback onPressed;
@@ -71,7 +73,7 @@ class _AnimatedFavoriteButtonState extends State<AnimatedFavoriteButton> with Si
       onPressed: _onTap,
       padding: widget.padding,
       constraints: widget.constraints,
-      tooltip: _shown ? 'Remove from favorites' : 'Add to favorites',
+      tooltip: _shown ? context.l10n.favoriteRemove : context.l10n.favoriteAdd,
       icon: ScaleTransition(
         scale: _scale,
         child: AnimatedSwitcher(

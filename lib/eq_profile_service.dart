@@ -21,6 +21,20 @@ import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// Invokes [method], retrying once after a short delay on
+/// MissingPluginException: the native channels are registered on the shared
+/// engine in MainActivity.provideFlutterEngine and Dart can race that (or an
+/// engine swap after Back/relaunch) and hit "No implementation found".
+Future<T?> invokeChannelRetry<T>(MethodChannel channel, String method, [dynamic args]) async {
+  try {
+    return await channel.invokeMethod<T>(method, args);
+  } on MissingPluginException {
+    await Future.delayed(const Duration(milliseconds: 600));
+    return await channel.invokeMethod<T>(method, args);
+  }
+}
+
+
 class OutputRoute {
   final String type; // speaker | wired | bluetooth
   final String name;
@@ -96,7 +110,7 @@ class EqProfileService {
 
   Future<void> _refreshRoute({bool notify = true}) async {
     try {
-      final m = await _channel.invokeMethod<Map>('getOutputRoute');
+      final m = await invokeChannelRetry<Map>(_channel, 'getOutputRoute');
       if (m != null) {
         final r = OutputRoute((m['type'] as String?) ?? 'speaker', (m['name'] as String?) ?? '');
         if (notify) {
@@ -122,16 +136,16 @@ class EqProfileService {
     final sid = _sessionId;
     if (sid == null || sid == 0) return;
     try {
-      final ok = await _channel.invokeMethod<bool>('initEqualizer', {'sessionId': sid}) ?? false;
+      final ok = await invokeChannelRetry<bool>(_channel, 'initEqualizer', {'sessionId': sid}) ?? false;
       if (!ok) return;
       final prefs = await SharedPreferences.getInstance();
       final enabled = prefs.getBool(enabledKey()) ?? false;
       final preset = prefs.getInt(presetKey());
-      final nativePresets = ((await _channel.invokeMethod<List>('getPresetNames', {'sessionId': sid})) ?? const []).length;
-      final bandCount = ((await _channel.invokeMethod<List>('getCenterBandFreqs', {'sessionId': sid})) ?? const []).length;
+      final nativePresets = ((await invokeChannelRetry<List>(_channel, 'getPresetNames', {'sessionId': sid})) ?? const []).length;
+      final bandCount = ((await invokeChannelRetry<List>(_channel, 'getCenterBandFreqs', {'sessionId': sid})) ?? const []).length;
 
       if (preset != null && preset < nativePresets) {
-        await _channel.invokeMethod('usePreset', {'sessionId': sid, 'index': preset});
+        await invokeChannelRetry(_channel, 'usePreset', {'sessionId': sid, 'index': preset});
       } else {
         Map<int, int> levels = {for (var b = 0; b < bandCount; b++) b: prefs.getInt(bandKey(b)) ?? 0};
         if (preset != null) {
@@ -140,11 +154,11 @@ class EqProfileService {
           if (custom != null) levels = {...levels, ...custom};
         }
         for (final e in levels.entries) {
-          await _channel.invokeMethod('setBandLevel', {'sessionId': sid, 'band': e.key, 'level': e.value});
+          await invokeChannelRetry(_channel, 'setBandLevel', {'sessionId': sid, 'band': e.key, 'level': e.value});
         }
       }
       // setBandLevel forces the effect on, so set the real state last.
-      await _channel.invokeMethod('setEnabled', {'sessionId': sid, 'enabled': enabled});
+      await invokeChannelRetry(_channel, 'setEnabled', {'sessionId': sid, 'enabled': enabled});
     } catch (e) {
       debugPrint('EQ profile apply failed: $e');
     }

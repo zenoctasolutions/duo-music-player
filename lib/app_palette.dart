@@ -25,9 +25,19 @@ class AccentOption {
 class GradientOption {
   final String name;
   final List<Color> colors;
-  const GradientOption(this.name, this.colors);
 
-  Color get accent => colors[colors.length == 3 ? 1 : 0];
+  /// For themes whose [colors] are too dark to paint buttons/highlights with
+  /// (the logo background): the gradient used for filled controls instead.
+  final List<Color>? fillColors;
+
+  /// Overrides the single accent, which defaults to the middle of [colors].
+  final Color? accentColor;
+
+  const GradientOption(this.name, this.colors, {this.fillColors, this.accentColor});
+
+  Color get accent => accentColor ?? colors[colors.length == 3 ? 1 : 0];
+
+  List<Color> get fill => fillColors ?? colors;
 }
 
 class AppPalette {
@@ -62,7 +72,19 @@ class AppPalette {
     GradientOption('Ember', [Color(0xFFFFB020), Color(0xFFFF6A3D), Color(0xFFE5254B)]),
     GradientOption('Lagoon', [Color(0xFF2DD4BF), Color(0xFF38BDF8)]),
     GradientOption('Midnight', [Color(0xFF312E81), Color(0xFF6D28D9), Color(0xFFDB2777)]),
+    // The app icon's background (plum -> midnight -> deep blue). Appended, not
+    // inserted, so saved indexes of the other themes stay valid. Buttons and
+    // highlights use the icon's violet, since the background is too dark.
+    GradientOption(
+      'Duo Logo',
+      [Color(0xFF46163A), Color(0xFF14142C), Color(0xFF122C60)],
+      fillColors: [Color(0xFF9A6AE8), Color(0xFF6D4BD0)],
+      accentColor: Color(0xFF9A6AE8),
+    ),
   ];
+
+  /// Index of the logo theme in [gradientOptions]; the default for new installs.
+  static const int logoGradientIndex = 8;
 
   /// Bottom-nav destinations, in nav order (index = tab index).
   static const List<String> tabNames = ['Library', 'Radio', 'Duo', 'Converter', 'Settings'];
@@ -87,7 +109,16 @@ class AppPalette {
 
   /// The colors of gradient surfaces: the gradient theme's, or the accent
   /// fading to its darker shade.
-  static List<Color> get gradientColors => gradientOption?.colors ?? [accent, accentDark];
+  static List<Color> get gradientColors => gradientOption?.fill ?? [accent, accentDark];
+
+  /// The logo-background gradient for large surfaces (nav bar, headers, hero
+  /// cards), or null when the theme has no separate background gradient.
+  static List<Color>? get backgroundGradient {
+    final g = gradientOption;
+    return g?.fillColors != null ? g!.colors : null;
+  }
+
+  static bool get isLogoTheme => backgroundGradient != null;
 
   static LinearGradient get gradient => LinearGradient(
         colors: gradientColors,
@@ -111,25 +142,58 @@ class AppPalette {
   /// (was the fixed 0xFF4178C0 alongside the default blue).
   static Color get accentDark {
     final g = gradientOption;
-    if (g != null) return g.colors.last;
+    if (g != null) return g.fill.last;
     final hsl = HSLColor.fromColor(accent);
     return hsl.withLightness((hsl.lightness - 0.1).clamp(0.0, 1.0)).toColor();
   }
+
+  /// WCAG contrast ratio (1..21) between two opaque colours.
+  static double contrastRatio(Color a, Color b) {
+    final la = a.computeLuminance(), lb = b.computeLuminance();
+    final hi = la > lb ? la : lb, lo = la > lb ? lb : la;
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  /// The accent, lightened just enough to read as TEXT (>= 4.5:1) on every
+  /// dark surface (cards, page background and the logo gradient stops).
+  /// Use for labels and links on dark surfaces; keep [accent] for fills,
+  /// icons and indicators. In light mode the accent is returned unchanged.
+  static Color accentText({required bool dark}) {
+    final base = accent;
+    if (!dark) return base;
+    final surfaces = <Color>[darkCard, darkBackground, ...?backgroundGradient];
+    var hsl = HSLColor.fromColor(base);
+    Color c = base;
+    for (var i = 0; i < 30; i++) {
+      c = hsl.toColor();
+      if (surfaces.every((s) => contrastRatio(c, s) >= 4.5)) return c;
+      if (hsl.lightness >= 0.95) break;
+      hsl = hsl.withLightness((hsl.lightness + 0.02).clamp(0.0, 0.95));
+    }
+    return c;
+  }
+
   static bool get amoled => _amoled;
   static int get startTab => _startTab;
 
   /// Dark-mode page background (was 0xFF121212 everywhere).
-  static Color get darkBackground => _amoled ? Colors.black : const Color(0xFF121212);
+  static Color get darkBackground =>
+      _amoled ? Colors.black : (isLogoTheme ? const Color(0xFF0F0F1F) : const Color(0xFF121212));
 
-  /// Dark-mode card/surface color (was 0xFF1E1E1E everywhere).
-  static Color get darkCard => _amoled ? const Color(0xFF0E0E0E) : const Color(0xFF1E1E1E);
+  /// Dark-mode card/surface color (was 0xFF1E1E1E everywhere; now a touch
+  /// lighter and cooler so cards read as elevated above the page).
+  static Color get darkCard =>
+      _amoled ? const Color(0xFF111113) : (isLogoTheme ? const Color(0xFF1C1C30) : const Color(0xFF212125));
 
   static Future<void> load() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final a = prefs.getInt(_kAccent);
       if (a != null) _accent = Color(a);
-      _gradientIndex = prefs.getInt(_kGradient) ?? -1;
+      // Installs that never picked a colour get the logo theme; anyone who
+      // chose an accent or gradient keeps it.
+      final chose = prefs.containsKey(_kGradient) || prefs.containsKey(_kAccent);
+      _gradientIndex = prefs.getInt(_kGradient) ?? (chose ? -1 : logoGradientIndex);
       _amoled = prefs.getBool(_kAmoled) ?? false;
       _startTab = (prefs.getInt(_kStartTab) ?? 0).clamp(0, tabNames.length - 1);
       _useSystemColors = prefs.getBool(_kSystemColors) ?? false;

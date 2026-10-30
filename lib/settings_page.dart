@@ -1,4 +1,5 @@
 // lib/settings_page.dart
+import 'l10n/l10n.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -29,6 +30,8 @@ import 'position_memory_service.dart';
 import 'lastfm_service.dart';
 import 'lastfm_page.dart';
 import 'ad_widgets.dart';
+import 'motion/motion_kit.dart';
+import 'ui/app_page_bar.dart';
 
 /// Fallback SharedPreferences keys
 const String _prefKeyDark = 'settings_dark_mode';
@@ -44,7 +47,7 @@ class SettingsColors {
   SettingsColors(this.isDarkMode);
   Color get backgroundColor => isDarkMode ? AppPalette.darkBackground : Colors.white;
   Color get surfaceColor => isDarkMode ? AppPalette.darkCard : const Color(0xFFF8F9FA);
-  Color get cardColor => isDarkMode ? (AppPalette.amoled ? AppPalette.darkCard : const Color(0xFF1B1B1B)) : Colors.white;
+  Color get cardColor => isDarkMode ? AppPalette.darkCard : Colors.white;
   Color get primaryText => isDarkMode ? Colors.white : Colors.black;
   Color get secondaryText => isDarkMode ? const Color(0xFFB0B0B0) : const Color(0xFF666666);
   Color get tertiaryText => isDarkMode ? const Color(0xFF999999) : const Color(0xFF999999);
@@ -838,11 +841,14 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
     required VoidCallback onTap,
     Widget? trailingWidget,
   }) {
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+    return _entrance(PressScale(
+      passive: true,
+      pressedScale: 0.98,
+      child: Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       elevation: 2,
       color: colors.cardColor,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: colors.divider, width: 1)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20), side: BorderSide(color: colors.divider, width: 1)),
       child: ListTile(
         leading: Container(width: 44, height: 44, decoration: BoxDecoration(color: colors.primary.withOpacity(0.12), borderRadius: BorderRadius.circular(8)), child: Icon(icon, color: colors.primary)),
         title: Text(title, style: TextStyle(fontWeight: FontWeight.w600, color: colors.primaryText)),
@@ -856,8 +862,14 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
         ]),
         onTap: onTap,
       ),
-    );
+      ),
+    ));
   }
+
+  /// Settings cards slide/fade in one after another the first time the tab
+  /// is built; [_cardIndex] is reset at the top of build().
+  int _cardIndex = 0;
+  Widget _entrance(Widget child) => FadeSlideIn(index: _cardIndex++, child: child);
 
   // ---------------- Seek UI (new) ----------------
 
@@ -914,6 +926,7 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
         ? (_timerState.endOfSong ? 'End of song' : _formatDurationShort(_timerState.remaining))
         : '';
 
+    _cardIndex = 0;
     final sc = SettingsColors(isDarkNow);
     final bg = sc.backgroundColor;
     final cardColor = sc.cardColor;
@@ -926,12 +939,10 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
       value: isDarkNow ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
       child: Scaffold(
         backgroundColor: bg,
-        appBar: AppBar(
-          title: const Text('Settings'),
+        appBar: AppPageBar(
+          title: context.l10n.navSettings,
           backgroundColor: sc.appBarBackground,
           foregroundColor: sc.appBarForeground,
-          elevation: 0,
-          centerTitle: true,
         ),
         body: SafeArea(
           child: Column(
@@ -941,11 +952,11 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
                   const SizedBox(height: 8),
 
                   // Equalizer card
-                  _buildSettingCard(icon: Icons.equalizer, title: 'Equalizer', subtitle: 'Adjust audio bands and apply presets', value: '', onTap: _openEqualizer),
+                  _buildSettingCard(icon: Icons.equalizer, title: context.l10n.settingsEqualizer, subtitle: context.l10n.settingsEqualizerSub, value: '', onTap: _openEqualizer),
                   _buildSettingCard(
                     icon: Icons.surround_sound_rounded,
-                    title: 'Sound effects',
-                    subtitle: 'Bass boost, virtualizer, loudness, volume normalization',
+                    title: context.l10n.settingsSoundEffects,
+                    subtitle: context.l10n.settingsSoundEffectsSub,
                     value: AudioEffectsService.instance.normalize ? 'Normalized' : '',
                     onTap: () async {
                       await Navigator.of(context).push(MaterialPageRoute(
@@ -955,8 +966,8 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
                   ),
                   _buildSettingCard(
                     icon: Icons.graphic_eq_rounded,
-                    title: 'Last.fm',
-                    subtitle: 'Scrobble your listening history',
+                    title: context.l10n.settingsLastfm,
+                    subtitle: context.l10n.settingsLastfmSub,
                     value: LastFmService.instance.isSignedIn ? (LastFmService.instance.username ?? 'On') : '',
                     onTap: () async {
                       await LastFmService.instance.load();
@@ -965,46 +976,46 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
                       if (mounted) setState(() {});
                     },
                   ),
-                  if (DuoService.instance.supported)
+                  if (Platform.isAndroid)
                     _buildSettingCard(
                       icon: Icons.hearing_rounded,
-                      title: 'Mono audio (Duo Mode)',
+                      title: context.l10n.settingsMono,
                       subtitle: _monoAudio == true
-                          ? 'On — both ears get the same mix, so Duo Mode can\'t split songs. Tap to turn it off in Accessibility.'
-                          : 'Must stay off so each ear gets its own song. Opens Accessibility settings.',
-                      value: _monoAudio == null ? '' : (_monoAudio! ? 'On' : 'Off'),
+                          ? context.l10n.settingsMonoOnSub
+                          : context.l10n.settingsMonoOffSub,
+                      value: _monoAudio == null ? '…' : (_monoAudio! ? 'On' : 'Off'),
                       trailingWidget: _monoAudio == true ? const Icon(Icons.warning_amber_rounded, color: Colors.orange) : null,
                       onTap: DuoService.instance.openAccessibilitySettings,
                     ),
                   // Internet Radio
-                  _buildSettingCard(icon: Icons.radio, title: 'Internet Radio', subtitle: 'Listen to live stations from around the world', value: '', onTap: _openInternetRadio),
+                  _buildSettingCard(icon: Icons.radio, title: context.l10n.settingsRadio, subtitle: context.l10n.settingsRadioSub, value: '', onTap: _openInternetRadio),
                   _buildSettingCard(
                     icon: Icons.system_update,
-                    title: 'Check Latest Version',
-                    subtitle: 'Open Play Store to update the app',
+                    title: context.l10n.settingsCheckVersion,
+                    subtitle: context.l10n.settingsCheckVersionSub,
                     value: '',
                     onTap: _openLatestVersionCard,
                   ),
                   _buildSettingCard(
                     icon: Icons.apps,
-                    title: 'Our Apps',
-                    subtitle: 'Discover more apps from Zenocta Solutions',
+                    title: context.l10n.settingsOurApps,
+                    subtitle: context.l10n.settingsOurAppsSub,
                     value: '',
                     onTap: _openOurAppsCard,
                   ),
 
                   _buildSettingCard(
                     icon: Icons.palette_outlined,
-                    title: 'Appearance',
-                    subtitle: 'Accent color, pure black theme, start screen',
+                    title: context.l10n.settingsAppearance,
+                    subtitle: context.l10n.settingsAppearanceSub,
                     value: AppPalette.amoled && isDarkNow ? 'Black' : (useSystem ? 'System' : (isDarkNow ? 'Dark' : 'Light')),
                     onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => AppearancePage(isDark: isDarkNow))),
                   ),
 
                   _buildSettingCard(
                     icon: Icons.filter_alt_outlined,
-                    title: 'Library filters',
-                    subtitle: 'Hide short clips and exclude folders',
+                    title: context.l10n.settingsLibraryFilters,
+                    subtitle: context.l10n.settingsLibraryFiltersSub,
                     value: LibraryFilter.isActive ? 'On' : '',
                     onTap: () async {
                       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => LibraryFiltersPage(isDark: isDarkNow)));
@@ -1015,30 +1026,30 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
                   // Sleep Timer card
                   _buildSettingCard(
                     icon: Icons.timer,
-                    title: 'Sleep Timer',
-                    subtitle: 'Stop after a set time or at the end of the song',
+                    title: context.l10n.settingsSleepTimer,
+                    subtitle: context.l10n.settingsSleepTimerSub,
                     value: timerDisplay,
                     trailingWidget: timerActive
-                        ? TextButton.icon(onPressed: _cancelSleepTimer, icon: Icon(Icons.cancel, color: Colors.orange.shade400), label: Text('Cancel', style: TextStyle(color: Colors.orange.shade400)))
+                        ? TextButton.icon(onPressed: _cancelSleepTimer, icon: Icon(Icons.cancel, color: Colors.orange.shade400), label: Text(context.l10n.settingsCancel, style: TextStyle(color: Colors.orange.shade400)))
                         : null,
                     onTap: _openSleepTimer,
                   ),
 
                   _buildSettingCard(
                     icon: Icons.menu_book_rounded,
-                    title: 'Audiobooks & long files',
-                    subtitle: 'Remember where you stopped and resume there',
+                    title: context.l10n.settingsAudiobooks,
+                    subtitle: context.l10n.settingsAudiobooksSub,
                     value: PositionMemoryService.instance.enabled ? 'On' : 'Off',
                     onTap: _openPositionMemorySettings,
                   ),
 
                   // --- NEW: Combined Seek Buttons toggle & Seek time selector ---
-                  Padding(
+                  _entrance(Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                     child: Card(
                       color: cardColor,
                       elevation: 2,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: dividerColor, width: 1)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20), side: BorderSide(color: dividerColor, width: 1)),
                       child: Column(
                         children: [
                           ListTile(
@@ -1073,20 +1084,20 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
                         ],
                       ),
                     ),
-                  ),
+                  )),
                   // --- END NEW ---
 
                   // Audio Cutter
-                  _buildSettingCard(icon: Icons.content_cut, title: 'Audio Cutter', subtitle: 'Trim local audio files', value: '', onTap: _openAudioCutterPicker),
+                  _buildSettingCard(icon: Icons.content_cut, title: context.l10n.settingsAudioCutter, subtitle: context.l10n.settingsAudioCutterSub, value: '', onTap: _openAudioCutterPicker),
 
                   // URL Downloader
-                  _buildSettingCard(icon: Icons.cloud_download, title: 'URL Downloader', subtitle: 'Download MP3 audio files via links', value: '', onTap: _openUrlDownloader),
+                  _buildSettingCard(icon: Icons.cloud_download, title: context.l10n.settingsUrlDownloader, subtitle: context.l10n.settingsUrlDownloaderSub, value: '', onTap: _openUrlDownloader),
 
                   // Local backup / restore (playlists, lyrics, favorites, conversions)
                   _buildSettingCard(
                     icon: Icons.backup,
-                    title: 'Backup & Restore',
-                    subtitle: 'Save or restore playlists, lyrics and favorites',
+                    title: context.l10n.settingsBackup,
+                    subtitle: context.l10n.settingsBackupSub,
                     value: '',
                     onTap: _openBackupRestore,
                   ),
@@ -1096,7 +1107,7 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
                   _buildSettingCard(
                     icon: Icons.info_outline,
                     title: _appName,
-                    subtitle: _version.isNotEmpty ? 'Version $_version' : 'Version info not available',
+                    subtitle: _version.isNotEmpty ? context.l10n.settingsVersion(_version) : context.l10n.settingsVersionUnavailable,
                     value: '',
                     onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => AboutPage(appName: _appName, version: _version, isDark: _effectiveIsDarkMode))),
                   ),
@@ -1443,17 +1454,19 @@ class _SleepTimerPageState extends State<SleepTimerPage> {
           child: Column(
             children: [
               IconButton(
+                tooltip: 'Increase',
                 onPressed: disabled ? null : () => onChanged((value < max) ? value + 1 : value),
                 icon: Icon(Icons.add, size: 20, color: disabled ? colors.tertiaryText : colors.primaryText),
                 padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
               ),
               Text(value.toString().padLeft(2, '0'), style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: colors.primaryText)),
               IconButton(
+                tooltip: 'Decrease',
                 onPressed: disabled ? null : () => onChanged((value > 0) ? value - 1 : value),
                 icon: Icon(Icons.remove, size: 20, color: disabled ? colors.tertiaryText : colors.primaryText),
                 padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
               ),
             ],
           ),

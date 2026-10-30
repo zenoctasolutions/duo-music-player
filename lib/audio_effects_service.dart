@@ -18,6 +18,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:ffmpeg_kit_flutter_new_audio/ffmpeg_kit.dart';
+import 'eq_profile_service.dart' show invokeChannelRetry;
 import 'package:ffmpeg_kit_flutter_new_audio/ffprobe_kit.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -178,7 +179,7 @@ class AudioEffectsService {
     final sid = _sessionId;
     if (sid == null || sid == 0) return;
     try {
-      final res = await _channel.invokeMethod<Map>('setSoundEffects', {
+      final res = await invokeChannelRetry<Map>(_channel, 'setSoundEffects', {
         'sessionId': sid,
         'bass': bass,
         'virtualizer': virtualizer,

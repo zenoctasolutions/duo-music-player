@@ -40,21 +40,16 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
       return;
     }
 
-    // Request storage/audio permission depending on platform/version
-    // permission_handler abstracts some differences; still request both if needed.
+    // READ_MEDIA_AUDIO on Android 13+, READ_EXTERNAL_STORAGE below
+    // (permission_handler maps Permission.audio accordingly).
     try {
-      var storageStatus = await Permission.storage.status;
-      if (!storageStatus.isGranted) {
-        storageStatus = await Permission.storage.request();
+      var audioStatus = await Permission.audio.status;
+      if (!audioStatus.isGranted) {
+        audioStatus = await Permission.audio.request();
       }
-
-      // For Android 13+ read-permission for audio may be required
-      if (!storageStatus.isGranted) {
-        final audioStatus = await Permission.audio.request();
-        if (!audioStatus.isGranted) {
-          _showSnack('Storage or audio permission required to set ringtone', isError: true);
-          return;
-        }
+      if (!audioStatus.isGranted) {
+        _showSnack('Audio permission required to set ringtone', isError: true);
+        return;
       }
 
       setState(() => _setting = true);
@@ -179,7 +174,7 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
                 ListTile(
                   tileColor: sheetBg,
                   title: Text('Device Ringtones', style: TextStyle(fontWeight: FontWeight.bold, color: sheetText)),
-                  trailing: IconButton(
+                  trailing: IconButton(tooltip: 'Close', 
                     icon: const Icon(Icons.close),
                     color: sheetText,
                     onPressed: () => Navigator.of(ctx).pop(),
